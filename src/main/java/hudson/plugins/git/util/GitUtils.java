@@ -26,6 +26,7 @@ import org.jenkinsci.lib.envinject.EnvInjectLogger;
 import org.jenkinsci.plugins.envinject.EnvInjectJobPropertyInfo;
 import org.jenkinsci.plugins.envinject.EnvInjectJobProperty;
 import org.jenkinsci.plugins.envinject.service.EnvInjectEnvVars;
+import org.eclipse.jgit.lib.Repository;
 
 public class GitUtils {
     GitClient git;
@@ -108,13 +109,15 @@ public class GitUtils {
         ObjectId shaJ;
         ObjectId commonAncestor;
         RevWalk walk = null;
+        Repository repository = null;
         final long start = System.currentTimeMillis();
         long calls = 0;
         if (log)
             LOGGER.fine(MessageFormat.format(
                     "Computing merge base of {0}  branches", l.size()));
         try {
-            walk = new RevWalk(git.getRepository());
+			repository = git.getRepository();
+			walk = new RevWalk(repository);
             walk.setRetainBody(false);
             walk.setRevFilter(RevFilter.MERGE_BASE);
             for (int i = 0; i < l.size(); i++)
@@ -153,6 +156,9 @@ public class GitUtils {
         } finally {
             if (walk != null)
                 walk.release();
+            if (repository != null) {
+            	repository.close();
+            }
         }
         if (log)
             LOGGER.fine(MessageFormat.format(
