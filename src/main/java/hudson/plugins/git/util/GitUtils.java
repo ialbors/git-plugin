@@ -34,6 +34,11 @@ import java.util.logging.Logger;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.revwalk.filter.RevFilter;
+import org.jenkinsci.lib.envinject.EnvInjectException;
+import org.jenkinsci.lib.envinject.EnvInjectLogger;
+import org.jenkinsci.plugins.envinject.EnvInjectJobPropertyInfo;
+import org.jenkinsci.plugins.envinject.EnvInjectJobProperty;
+import org.jenkinsci.plugins.envinject.service.EnvInjectEnvVars;
 
 public class GitUtils {
     IGitAPI git;
@@ -238,6 +243,24 @@ public class GitUtils {
 
         EnvVars.resolve(env);
 
+        if (Hudson.getInstance().getPlugin("envinject") != null) {
+        	
+        	EnvInjectJobProperty envInjectProperties = (EnvInjectJobProperty)p.getProperty(EnvInjectJobProperty.class);
+        	EnvInjectJobPropertyInfo info = envInjectProperties.getInfo();
+        	
+        	EnvInjectLogger logger = new EnvInjectLogger(listener);
+        	EnvInjectEnvVars envInjectEnvVarsService = new EnvInjectEnvVars(logger);
+        	try{
+        		Map<String, String> propertiesEnvVars = envInjectEnvVarsService.getEnvVarsPropertiesProperty(ws, logger, info.getPropertiesFilePath(), info.getPropertiesContentMap(null), null);
+        	
+        		env.putAll(propertiesEnvVars);
+        	}
+        	catch(EnvInjectException e){
+        		e.printStackTrace();
+        	}
+      	        	
+        }
+        
         return env;
     }
 
