@@ -251,7 +251,7 @@ public class GitUtils {
         	EnvInjectLogger logger = new EnvInjectLogger(listener);
         	EnvInjectEnvVars envInjectEnvVarsService = new EnvInjectEnvVars(logger);
         	try{
-        		Map<String, String> propertiesEnvVars = envInjectEnvVarsService.getEnvVarsPropertiesProperty(ws, logger, info.getPropertiesFilePath(), info.getPropertiesContentMap(null), null);
+        		Map<String, String> propertiesEnvVars = envInjectEnvVarsService.getEnvVarsPropertiesJobProperty(ws, logger, info.isLoadFilesFromMaster(), info.getPropertiesFilePath(), info.getPropertiesContentMap(null), null, null);
         	
         		env.putAll(propertiesEnvVars);
         	}
