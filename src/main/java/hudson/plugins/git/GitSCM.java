@@ -18,6 +18,9 @@ import hudson.model.Descriptor.FormException;
 import hudson.model.Hudson.MasterComputer;
 import hudson.plugins.git.browser.GitRepositoryBrowser;
 import hudson.plugins.git.browser.GitWeb;
+import hudson.plugins.git.client.CliGitAPIImpl;
+import hudson.plugins.git.client.IGitAPI;
+import hudson.plugins.git.client.JGitAPIImpl;
 import hudson.plugins.git.opt.PreBuildMergeOptions;
 import hudson.plugins.git.util.Build;
 import hudson.plugins.git.util.BuildChooser;
@@ -33,11 +36,11 @@ import hudson.scm.PollingResult;
 import hudson.scm.SCM;
 import hudson.scm.SCMDescriptor;
 import hudson.scm.SCMRevisionState;
+import hudson.triggers.SCMTrigger;
 import hudson.util.FormValidation;
 import hudson.util.IOUtils;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.Serializable;
@@ -126,6 +129,7 @@ public class GitSCM extends SCM implements Serializable {
     private Collection<SubmoduleConfig> submoduleCfg;
     public static final String GIT_BRANCH = "GIT_BRANCH";
     public static final String GIT_COMMIT = "GIT_COMMIT";
+    public static final String GIT_PREVIOUS_COMMIT = "GIT_PREVIOUS_COMMIT";
     private String relativeTargetDir;
     private String reference;
     private String excludedRegions;
@@ -681,11 +685,11 @@ public class GitSCM extends SCM implements Serializable {
                 }
             }
             final EnvVars environment = GitUtils.getPollEnvironment(project, workspace, launcher, listener, false);
-            IGitAPI git = new GitAPI(gitExe, null, listener, environment, reference);
+            IGitAPI git = new CliGitAPIImpl(gitExe, null, listener, environment, reference);
             String gitRepo = getParamExpandedRepos(lastBuild).get(0).getURIs().get(0).toString();
-            String headRevision = git.getHeadRev(gitRepo, getBranches().get(0).getName());
+            ObjectId head = git.getHeadRev(gitRepo, getBranches().get(0).getName());
 
-            if(buildData.lastBuild.getRevision().getSha1String().equals(headRevision)) {
+            if (head != null && buildData.lastBuild.getRevision().getSha1().name().equals(head.name())) {
                 return PollingResult.NO_CHANGES;
             } else {
                 return PollingResult.BUILD_NOW;
@@ -733,7 +737,7 @@ public class GitSCM extends SCM implements Serializable {
             private static final long serialVersionUID = 1L;
 
             public Boolean invoke(File localWorkspace, VirtualChannel channel) throws IOException, InterruptedException {
-                IGitAPI git = new GitAPI(gitExe, localWorkspace, listener, environment, reference);
+                IGitAPI git = new CliGitAPIImpl(gitExe, localWorkspace, listener, environment, reference);
 
                 if (git.hasGitRepo()) {
                     // Repo is there - do a fetch
@@ -780,20 +784,17 @@ public class GitSCM extends SCM implements Serializable {
         List<IndexEntry> submodules = parentGit.getSubmodules("HEAD");
 
         for (IndexEntry submodule : submodules) {
+            String subdir = submodule.getFile();
             try {
-                File subdir = new File(workspace, submodule.getFile());
                 listener.getLogger().println("Trying to clean submodule in " + subdir);
-                IGitAPI subGit = new GitAPI(parentGit.getGitExe(), subdir,
-                        listener, parentGit.getEnvironment(), parentGit.getReference());
-
+                IGitAPI subGit = parentGit.subGit(subdir);
                 subGit.clean();
             } catch (Exception ex) {
                 listener.getLogger().println(
                         "Problem cleaning submodule in "
-                        + submodule.getFile()
+                        + subdir
                         + " - could be unavailable. Continuing anyway");
             }
-
         }
     }
 
@@ -810,7 +811,8 @@ public class GitSCM extends SCM implements Serializable {
             TaskListener listener,
             RemoteConfig remoteRepository) {
         try {
-            git.fetch(remoteRepository);
+            // Assume there is only 1 URL / refspec for simplicity
+            git.fetch(remoteRepository.getName(), remoteRepository.getFetchRefSpecs().get(0));
             return true;
         } catch (GitException ex) {
             ex.printStackTrace(listener.error(
@@ -819,24 +821,6 @@ public class GitSCM extends SCM implements Serializable {
                     + " - could be unavailable. Continuing anyway"));
         }
         return false;
-    }
-
-    /**
-     * This does not yield the correct RemoteConfig - the refspec is taken from
-     * the parent repository, which is probably not valid inside the submodule.
-     *
-     * @deprecated
-     */
-    @Deprecated
-    public RemoteConfig getSubmoduleRepository(IGitAPI parentGit,
-            RemoteConfig orig,
-            String name) throws GitException {
-        // The first attempt at finding the URL in this new code relies on
-        // submoduleInit, submoduleSync, fixSubmoduleUrls already being executed
-        // since the last fetch of the super project.  (This is currently done
-        // by calling git.setupSubmoduleUrls(...). )
-        String refUrl = parentGit.getSubmoduleUrl(name);
-        return newRemoteConfig(name, refUrl, orig.getFetchRefSpecs().get(0));
     }
 
     private RemoteConfig newRemoteConfig(String name, String refUrl, RefSpec refSpec) {
@@ -851,20 +835,6 @@ public class GitSCM extends SCM implements Serializable {
             return RemoteConfig.getAllRemoteConfigs(repoConfig).get(0);
         } catch (Exception ex) {
             throw new GitException("Error trying to create JGit configuration", ex);
-        }
-    }
-
-    private boolean changeLogResult(String changeLog, File changelogFile) throws IOException {
-        if (changeLog == null) {
-            return false;
-        } else {
-            changelogFile.delete();
-
-            FileOutputStream fos = new FileOutputStream(changelogFile);
-            fos.write(changeLog.getBytes());
-            fos.close();
-            // Write to file
-            return true;
         }
     }
 
@@ -974,24 +944,25 @@ public class GitSCM extends SCM implements Serializable {
 
         final RevisionParameterAction rpa = build.getAction(RevisionParameterAction.class);
         final BuildChooserContext context = new BuildChooserContextImpl(build.getProject(), build);
-        
+
+        final PrintStream logger = listener.getLogger();
         if(useShallowClone) {
         //	if(build.getProject().getPublishersList().get(GitPublisher.class) == null) {
-        		listener.getLogger().println("Using shallow clone");
+        		logger.println("Using shallow clone");
         //	} else {
         //		useShallowClone = false;
         //	}
         }
 
-        return workingDirectory.act(new FileCallable<Revision>() {
+        Collection<Revision> candidates = workingDirectory.act(new FileCallable<Collection<Revision>>() {
 
             private static final long serialVersionUID = 1L;
 
-            public Revision invoke(File localWorkspace, VirtualChannel channel)
+            public Collection<Revision> invoke(File localWorkspace, VirtualChannel channel)
                     throws IOException, InterruptedException {
                 FilePath ws = new FilePath(localWorkspace);
                 final PrintStream log = listener.getLogger();
-                IGitAPI git = new GitAPI(gitExe, localWorkspace, listener, environment, reference);
+                IGitAPI git = new CliGitAPIImpl(gitExe, localWorkspace, listener, environment, reference);
 
                 if (wipeOutWorkspace) {
                     log.println("Wiping out workspace first.");
@@ -1010,7 +981,7 @@ public class GitSCM extends SCM implements Serializable {
                     else
                         log.println(MessageFormat
                                 .format("Fetching changes from {0} remote Git repositories",
-                                        repos));
+                                        repos.size()));
 
                     boolean fetched = false;
 
@@ -1041,7 +1012,7 @@ public class GitSCM extends SCM implements Serializable {
                     boolean successfullyCloned = false;
                     for (RemoteConfig rc : repos) {
                         try {
-                            git.clone(rc, useShallowClone);
+                            git.clone(rc.getURIs().get(0).toPrivateString(), rc.getName(), useShallowClone);
                             successfullyCloned = true;
                             break;
                         } catch (GitException ex) {
@@ -1061,7 +1032,8 @@ public class GitSCM extends SCM implements Serializable {
                     // Also do a fetch
                     for (RemoteConfig remoteRepository : repos) {
                         try {
-                            git.fetch(remoteRepository);
+                            // Assume there is only 1 URL / refspec for simplicity
+                            git.fetch(remoteRepository.getName(), remoteRepository.getFetchRefSpecs().get(0));
                             fetched = true;
                         } catch (Exception e) {
                             e.printStackTrace(listener.error(
@@ -1087,22 +1059,34 @@ public class GitSCM extends SCM implements Serializable {
                 }
 
                 if (parentLastBuiltRev != null) {
-                    return parentLastBuiltRev;
+                    return Collections.singleton(parentLastBuiltRev);
                 }
 
                 if (rpa != null) {
-                    return rpa.toRevision(git);
+                    return Collections.singleton(rpa.toRevision(git));
                 }
 
-                Collection<Revision> candidates = buildChooser.getCandidateRevisions(
+                return buildChooser.getCandidateRevisions(
                         false, singleBranch, git, listener, buildData, context);
-                if (candidates.size() == 0) {
-                    log.println("No candidate revisions");
-                    return null;
-                }
-                return candidates.iterator().next();
+
             }
         });
+
+        if (candidates.size() == 0) {
+            logger.println("No candidate revisions");
+            return null;
+        }
+        if (candidates.size() > 1) {
+            logger.println("Multiple candidate revisions");
+            AbstractProject<?, ?> project = build.getProject();
+            if (!project.isDisabled()) {
+                logger.println("Scheduling another build to catch up with " + project.getFullDisplayName());
+                if (!project.scheduleBuild(0, new SCMTrigger.SCMTriggerCause())) {
+                    logger.println("WARNING: multiple candidate revisions, but unable to schedule build of " + project.getFullDisplayName());
+                }
+            }
+        }
+        return candidates.iterator().next();
     }
 
     @Override
@@ -1156,14 +1140,16 @@ public class GitSCM extends SCM implements Serializable {
         final BuildChooserContext context = new BuildChooserContextImpl(build.getProject(),build);
 
         BuildData returnedBuildData;
-        if (mergeOptions.doMerge() && !revToBuild.containsBranchName(mergeOptions.getRemoteBranchName())) {
+        final String remoteBranchName = getParameterString(mergeOptions.getRemoteBranchName(), build);
+
+        if (mergeOptions.doMerge() && !revToBuild.containsBranchName(remoteBranchName)) {
             returnedBuildData = workingDirectory.act(new FileCallable<BuildData>() {
 
                 private static final long serialVersionUID = 1L;
 
                 public BuildData invoke(File localWorkspace, VirtualChannel channel)
                         throws IOException, InterruptedException {
-                    IGitAPI git = new GitAPI(gitExe, localWorkspace, listener, environment, reference);
+                    IGitAPI git = new CliGitAPIImpl(gitExe, localWorkspace, listener, environment, reference);
 
                     // Do we need to merge this revision onto MergeTarget
 
@@ -1171,21 +1157,21 @@ public class GitSCM extends SCM implements Serializable {
                     // us..
                     listener.getLogger().println(
                             "Merging " + revToBuild + " onto "
-                            + mergeOptions.getMergeTarget());
+                            + getParameterString(mergeOptions.getMergeTarget(), build));
 
                     // checkout origin/blah
-                    ObjectId target = git.revParse(mergeOptions.getRemoteBranchName());
+                    ObjectId target = git.revParse(remoteBranchName);
 
-                    git.checkoutBranch(paramLocalBranch, target.name());
+                    checkout(git, target, paramLocalBranch);
 
                     try {
-                        git.merge(revToBuild.getSha1().name());
+                        git.merge(revToBuild.getSha1());
                     } catch (Exception ex) {
                         // We still need to tag something to prevent
                         // repetitive builds from happening - tag the
                         // candidate
                         // branch.
-                        git.checkoutBranch(paramLocalBranch, revToBuild.getSha1().name());
+                        checkout(git, revToBuild.getSha1(), paramLocalBranch);
 
                         if (!getSkipTag()) {
                             git.tag(buildnumber, "Jenkins Build #"
@@ -1208,7 +1194,7 @@ public class GitSCM extends SCM implements Serializable {
                         git.tag(buildnumber, "Jenkins Build #" + buildNumber);
                     }
 
-                    computeMergeChangeLog(git, revToBuild, mergeOptions.getRemoteBranchName(), listener, changelogFile);
+                    computeMergeChangeLog(git, revToBuild, remoteBranchName, listener, changelogFile);
 
                     Build build = new Build(revToBuild, buildNumber, null);
                     buildData.saveBuild(build);
@@ -1234,7 +1220,7 @@ public class GitSCM extends SCM implements Serializable {
 
                 public BuildData invoke(File localWorkspace, VirtualChannel channel)
                         throws IOException, InterruptedException {
-                    IGitAPI git = new GitAPI(gitExe, localWorkspace, listener, environment, reference);
+                    IGitAPI git = new CliGitAPIImpl(gitExe, localWorkspace, listener, environment, reference);
 
                     // Straight compile-the-branch
                     listener.getLogger().println("Checking out " + revToBuild);
@@ -1248,7 +1234,7 @@ public class GitSCM extends SCM implements Serializable {
                         }
                     }
 
-                    git.checkoutBranch(paramLocalBranch, revToBuild.getSha1().name());
+                    checkout(git, revToBuild.getSha1(), paramLocalBranch);
 
                     if (git.hasGitModules() && !disableSubmodules) {
                         // This ensures we don't miss changes to submodule paths and allows
@@ -1287,6 +1273,25 @@ public class GitSCM extends SCM implements Serializable {
     }
 
     /**
+     * @param branch move/create the branch in this name at the specified commit-ish and check out that branch.
+     */
+    private void checkout(IGitAPI git, ObjectId commit, /* @Nullable */ String branch) throws GitException {
+        // First, checkout to detached HEAD, so we can delete the branch.
+        git.checkout(commit.name());
+
+        if (branch!=null) {
+            // Second, check to see if the branch actually exists, and then delete it if it does.
+            for (Branch b : git.getBranches()) {
+                if (b.getName().equals(branch)) {
+                    git.deleteBranch(branch);
+                }
+            }
+            // Lastly, checkout the branch, creating it in the process, using commitish as the start point.
+            git.checkout(commit.name(), branch);
+        }
+    }
+
+    /**
      * Build up change log from all the branches that we've merged into {@code revToBuild}
      *
      * @param git
@@ -1307,7 +1312,7 @@ public class GitSCM extends SCM implements Serializable {
             for (Branch b : revToBuild.getBranches()) {
                 Build lastRevWas = buildChooser.prevBuildForChangelog(b.getName(), buildData, git, context);
                 if (lastRevWas != null) {
-                    if (git.isCommitInRepo(lastRevWas.getSHA1().name())) {
+                    if (git.isCommitInRepo(lastRevWas.getSHA1())) {
                         putChangelogDiffs(git, b.name, lastRevWas.getSHA1().name(), revToBuild.getSha1().name(), out);
                         histories++;
                     } else {
@@ -1330,7 +1335,7 @@ public class GitSCM extends SCM implements Serializable {
     }
 
     private void computeMergeChangeLog(IGitAPI git, Revision revToBuild, String revFrom, BuildListener listener, FilePath changelogFile) throws IOException, InterruptedException {
-        if (!git.isCommitInRepo(revFrom)) {
+        if (!git.isCommitInRepo(ObjectId.fromString(revFrom))) {
             listener.getLogger().println("Could not record history. Previous build's commit, " + revFrom
                                          + ", does not exist in the current repository.");
         } else {
@@ -1365,6 +1370,11 @@ public class GitSCM extends SCM implements Serializable {
             env.put(GIT_BRANCH, branch.getName());
         }
         if (rev != null) {
+            Branch branch = rev.getBranches().iterator().next();
+            String prevCommit = getLastBuiltCommitOfBranch(build, branch);
+            if (prevCommit != null) {
+                env.put(GIT_PREVIOUS_COMMIT, prevCommit);
+            }
             String commit = rev.getSha1String();
             if (commit != null) {
                 env.put(GIT_COMMIT, commit);
@@ -1383,6 +1393,21 @@ public class GitSCM extends SCM implements Serializable {
         }
 
     }
+
+    private String getLastBuiltCommitOfBranch(AbstractBuild<?, ?> build, Branch branch) {
+        String prevCommit = null;
+        if (build.getPreviousBuiltBuild() != null) {
+            final Build lastBuildOfBranch = fixNull(getBuildData(build.getPreviousBuiltBuild(), false)).getLastBuildOfBranch(branch.getName());
+            if (lastBuildOfBranch != null) {
+                Revision previousRev = lastBuildOfBranch.getRevision();
+                if (previousRev != null) {
+                    prevCommit = previousRev.getSha1String();
+                }
+            }
+        }
+        return prevCommit;
+    }
+
 
     private void putChangelogDiffs(IGitAPI git, String branchName, String revFrom,
             String revTo, PrintStream fos) throws IOException {
@@ -1786,7 +1811,9 @@ public class GitSCM extends SCM implements Serializable {
                 return false;
             }
 
-            List<String> revShow = git.showRevision(r, buildData);
+            List<String> revShow = git.showRevision(
+                    (buildData != null && buildData.lastBuild != null) ? buildData.lastBuild.revision.getSha1() : null,
+                    r.getSha1());
 
             // If the revision info is empty, something went weird, so we'll just
             // return false.

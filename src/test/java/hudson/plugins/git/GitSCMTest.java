@@ -1,6 +1,5 @@
 package hudson.plugins.git;
 
-import hudson.BulkChange;
 import hudson.EnvVars;
 import hudson.FilePath;
 import hudson.model.AbstractBuild;
@@ -11,9 +10,9 @@ import hudson.model.FreeStyleProject;
 import hudson.model.Hudson;
 import hudson.model.Node;
 import hudson.model.Result;
-import hudson.model.TaskListener;
 import hudson.model.User;
 import hudson.plugins.git.GitSCM.BuildChooserContextImpl;
+import hudson.plugins.git.client.CliGitAPIImpl;
 import hudson.plugins.git.util.BuildChooserContext;
 import hudson.plugins.git.util.BuildChooserContext.ContextCallable;
 import hudson.plugins.parameterizedtrigger.BuildTrigger;
@@ -26,25 +25,22 @@ import hudson.slaves.DumbSlave;
 import hudson.slaves.EnvironmentVariablesNodeProperty;
 import hudson.slaves.EnvironmentVariablesNodeProperty.Entry;
 import hudson.plugins.git.GitSCM.DescriptorImpl;
-import hudson.plugins.git.opt.PreBuildMergeOptions;
 import hudson.plugins.git.util.DefaultBuildChooser;
 import hudson.util.IOException2;
-import hudson.util.StreamTaskListener;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Collections2;
 
+import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.PersonIdent;
 
 import org.jvnet.hudson.test.Bug;
 import org.jvnet.hudson.test.CaptureEnvironmentBuilder;
-import org.jvnet.hudson.test.HudsonTestCase;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 import java.util.Set;
 
 /**
@@ -67,11 +63,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
         final Set<User> culprits = build2.getCulprits();
@@ -79,7 +75,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertEquals("", janeDoe.getName(), culprits.iterator().next().getFullName());
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     public void testBasicRemotePoll() throws Exception {
@@ -90,11 +86,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         // ... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
         final Set<User> culprits = build2.getCulprits();
@@ -102,7 +98,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertEquals("", janeDoe.getName(), culprits.iterator().next().getFullName());
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     public void testBasicIncludedRegion() throws Exception {
@@ -113,15 +109,15 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertFalse("scm polling detected commit2 change, which should not have been included", project.pollSCMChanges(listener));
+        assertFalse("scm polling detected commit2 change, which should not have been included", project.poll(listener).hasChanges());
 
         final String commitFile3 = "commitFile3";
         commit(commitFile3, johnDoe, "Commit number 3");
-        assertTrue("scm polling did not detect commit3 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit3 change", project.poll(listener).hasChanges());
 
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2, commitFile3);
@@ -134,7 +130,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertTrue(build2.getWorkspace().child(commitFile3).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
     
     public void testIncludedRegionWithDeeperCommits() throws Exception {
@@ -145,11 +141,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertFalse("scm polling detected commit2 change, which should not have been included", project.pollSCMChanges(listener));
+        assertFalse("scm polling detected commit2 change, which should not have been included", project.poll(listener).hasChanges());
         
 
         final String commitFile3 = "commitFile3";
@@ -157,7 +153,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         
         final String commitFile4 = "commitFile4";
         commit(commitFile4, janeDoe, "Commit number 4");
-        assertTrue("scm polling did not detect commit3 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit3 change", project.poll(listener).hasChanges());
 
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2, commitFile3);
@@ -170,7 +166,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertTrue(build2.getWorkspace().child(commitFile3).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     public void testBasicExcludedRegion() throws Exception {
@@ -181,15 +177,15 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertFalse("scm polling detected commit2 change, which should have been excluded", project.pollSCMChanges(listener));
+        assertFalse("scm polling detected commit2 change, which should have been excluded", project.poll(listener).hasChanges());
 
         final String commitFile3 = "commitFile3";
         commit(commitFile3, johnDoe, "Commit number 3");
-        assertTrue("scm polling did not detect commit3 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit3 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2, commitFile3);
         final Set<User> culprits = build2.getCulprits();
@@ -201,7 +197,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertTrue(build2.getWorkspace().child(commitFile3).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     @Bug(value = 8342)
@@ -239,14 +235,14 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertFalse("scm polling detected commit2 change, which should have been excluded", project.pollSCMChanges(listener));
+        assertFalse("scm polling detected commit2 change, which should have been excluded", project.poll(listener).hasChanges());
         final String commitFile3 = "commitFile3";
         commit(commitFile3, johnDoe, "Commit number 3");
-        assertTrue("scm polling did not detect commit3 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit3 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2, commitFile3);
         final Set<User> culprits = build2.getCulprits();
@@ -258,7 +254,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertTrue(build2.getWorkspace().child(commitFile3).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
     }
 
@@ -270,11 +266,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, "subdir", Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, "subdir", Result.SUCCESS,
                                             commitFile2);
@@ -286,7 +282,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertEquals("The 'subdir' subdirectory should contain commitFile2, but does not.", true,
                 build2.getWorkspace().child("subdir").child(commitFile2).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     public void testBasicWithSlave() throws Exception {
@@ -298,11 +294,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
         final Set<User> culprits = build2.getCulprits();
@@ -310,7 +306,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertEquals("", janeDoe.getName(), culprits.iterator().next().getFullName());
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     // For HUDSON-7547
@@ -327,11 +323,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         //... and build it...
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
         final Set<User> culprits = build2.getCulprits();
@@ -339,7 +335,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertEquals("", janeDoe.getName(), culprits.iterator().next().getFullName());
         assertTrue(build2.getWorkspace().child(commitFile2).exists());
         assertBuildStatusSuccess(build2);
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
     public void testAuthorOrCommitterFalse() throws Exception {
@@ -351,15 +347,15 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, janeDoe, "Commit number 1");
         final FreeStyleBuild firstBuild = build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, johnDoe, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
 
         final FreeStyleBuild secondBuild = build(project, Result.SUCCESS, commitFile2);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final Set<User> secondCulprits = secondBuild.getCulprits();
 
@@ -377,15 +373,15 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, janeDoe, "Commit number 1");
         final FreeStyleBuild firstBuild = build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
         commit(commitFile2, johnDoe, janeDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
 
         final FreeStyleBuild secondBuild = build(project, Result.SUCCESS, commitFile2);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final Set<User> secondCulprits = secondBuild.getCulprits();
 
@@ -406,12 +402,11 @@ public class GitSCMTest extends AbstractGitTestCase {
         build(project, Result.SUCCESS, commitFile1);
 
         //now create and checkout a new branch:
-        git.branch("untracked");
-        git.checkout("untracked");
+        git.checkout(Constants.HEAD, "untracked");
         //.. and commit to it:
         final String commitFile2 = "commitFile2";
         commit(commitFile2, johnDoe, "Commit number 2");
-        assertFalse("scm polling should not detect commit2 change because it is not in the branch we are tracking.", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect commit2 change because it is not in the branch we are tracking.", project.poll(listener).hasChanges());
     }
 
     public void testBranchIsAvailableInEvironment() throws Exception {
@@ -461,7 +456,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         // commit to it
         final String commitFile2 = "commitFile2";
         commit(commitFile2, johnDoe, "Commit number 2");
-        assertFalse("scm polling should not detect any more changes since mytag is untouched right now", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes since mytag is untouched right now", project.poll(listener).hasChanges());
         build(project, Result.FAILURE);  // fail, because there's nothing to be checked out here
 
         // tag it, then delete the tmp branch
@@ -471,9 +466,9 @@ public class GitSCMTest extends AbstractGitTestCase {
 
         // at this point we're back on master, there are no other branches, tag "mytag" exists but is
         // not part of "master"
-        assertTrue("scm polling should detect commit2 change in 'mytag'", project.pollSCMChanges(listener));
+        assertTrue("scm polling should detect commit2 change in 'mytag'", project.poll(listener).hasChanges());
         build(project, Result.SUCCESS, commitFile2);
-        assertFalse("scm polling should not detect any more changes after last build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after last build", project.poll(listener).hasChanges());
 
         // now, create tmp branch again against mytag:
         git.checkout(mytag);
@@ -481,7 +476,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         // another commit:
         final String commitFile3 = "commitFile3";
         commit(commitFile3, johnDoe, "Commit number 3");
-        assertFalse("scm polling should not detect any more changes since mytag is untouched right now", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes since mytag is untouched right now", project.poll(listener).hasChanges());
 
         // now we're going to force mytag to point to the new commit, if everything goes well, gitSCM should pick the change up:
         git.tag(mytag, "mytag moved");
@@ -489,9 +484,9 @@ public class GitSCMTest extends AbstractGitTestCase {
         git.launchCommand("branch", "-D", tmpBranch);
 
         // at this point we're back on master, there are no other branches, "mytag" has been updated to a new commit:
-        assertTrue("scm polling should detect commit3 change in 'mytag'", project.pollSCMChanges(listener));
+        assertTrue("scm polling should detect commit3 change in 'mytag'", project.poll(listener).hasChanges());
         build(project, Result.SUCCESS, commitFile3);
-        assertFalse("scm polling should not detect any more changes after last build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after last build", project.poll(listener).hasChanges());
     }
 
     /**
@@ -513,9 +508,9 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile2, johnDoe, "Commit number 2");
         final String commitFile3 = "commitFile3";
         commit(commitFile3, johnDoe, "Commit number 3");
-        assertTrue("scm polling should detect changes in 'master' branch", project.pollSCMChanges(listener));
+        assertTrue("scm polling should detect changes in 'master' branch", project.poll(listener).hasChanges());
         build(project, Result.SUCCESS, commitFile1, commitFile2);
-        assertFalse("scm polling should not detect any more changes after last build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after last build", project.poll(listener).hasChanges());
 
         // now jump back...
         git.checkout(fork);
@@ -525,16 +520,16 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(forkFile1, johnDoe, "Fork commit number 1");
         final String forkFile2 = "forkFile2";
         commit(forkFile2, johnDoe, "Fork commit number 2");
-        assertTrue("scm polling should detect changes in 'fork' branch", project.pollSCMChanges(listener));
+        assertTrue("scm polling should detect changes in 'fork' branch", project.poll(listener).hasChanges());
         build(project, Result.SUCCESS, forkFile1, forkFile2);
-        assertFalse("scm polling should not detect any more changes after last build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after last build", project.poll(listener).hasChanges());
     }
 
     @Bug(10060)
     public void testSubmoduleFixup() throws Exception {
         File repo = createTmpDir();
         FilePath moduleWs = new FilePath(repo);
-        GitAPI moduleRepo = new GitAPI("git", repo, listener, new EnvVars());
+        CliGitAPIImpl moduleRepo = new CliGitAPIImpl("git", repo, listener, new EnvVars());
 
         {// first we create a Git repository with submodule
             moduleRepo.init();
@@ -639,13 +634,13 @@ public class GitSCMTest extends AbstractGitTestCase {
         commit(commitFile1, johnDoe, "Commit number 1");
         final FreeStyleBuild build = build(project, Result.SUCCESS, commitFile1);
 
-        assertFalse("scm polling should not detect any more changes after build", project.pollSCMChanges(listener));
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
 
         final String commitFile2 = "commitFile2";
 
         final PersonIdent jeffDoe = new PersonIdent("Jeff Doe", "jeff@doe.com");
         commit(commitFile2, jeffDoe, "Commit number 2");
-        assertTrue("scm polling did not detect commit2 change", project.pollSCMChanges(listener));
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
         //... and build it...
 
         final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
@@ -710,8 +705,9 @@ public class GitSCMTest extends AbstractGitTestCase {
 
     private FreeStyleBuild build(final FreeStyleProject project, final Result expectedResult, final String...expectedNewlyCommittedFiles) throws Exception {
         final FreeStyleBuild build = project.scheduleBuild2(0, new Cause.UserCause()).get();
+        System.out.println(build.getLog());
         for(final String expectedNewlyCommittedFile : expectedNewlyCommittedFiles) {
-            assertTrue(build.getWorkspace().child(expectedNewlyCommittedFile).exists());
+            assertTrue(expectedNewlyCommittedFile + " file not found in workspace", build.getWorkspace().child(expectedNewlyCommittedFile).exists());
         }
         if(expectedResult != null) {
             assertBuildStatus(expectedResult, build);
@@ -721,6 +717,7 @@ public class GitSCMTest extends AbstractGitTestCase {
 
     private FreeStyleBuild build(final FreeStyleProject project, final String parentDir, final Result expectedResult, final String...expectedNewlyCommittedFiles) throws Exception {
         final FreeStyleBuild build = project.scheduleBuild2(0, new Cause.UserCause()).get();
+        System.out.println(build.getLog());
         for(final String expectedNewlyCommittedFile : expectedNewlyCommittedFiles) {
             assertTrue(build.getWorkspace().child(parentDir).child(expectedNewlyCommittedFile).exists());
         }

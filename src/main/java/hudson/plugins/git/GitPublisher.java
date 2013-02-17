@@ -7,6 +7,9 @@ import hudson.matrix.MatrixAggregator;
 import hudson.matrix.MatrixBuild;
 import hudson.matrix.MatrixRun;
 import hudson.model.*;
+import hudson.plugins.git.client.CliGitAPIImpl;
+import hudson.plugins.git.client.IGitAPI;
+import hudson.plugins.git.client.JGitAPIImpl;
 import hudson.plugins.git.opt.PreBuildMergeOptions;
 import hudson.remoting.VirtualChannel;
 import hudson.scm.SCM;
@@ -200,7 +203,7 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                             public Boolean invoke(File workspace,
                                                   VirtualChannel channel) throws IOException {
                                 
-                                IGitAPI git = new GitAPI(
+                                IGitAPI git = new CliGitAPIImpl(
                                                          gitExe, workspace,
                                                          listener, environment);
                                 
@@ -218,8 +221,8 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                 if (mergeOptions.doMerge() && buildResult.isBetterOrEqualTo(Result.SUCCESS)) {
                                     RemoteConfig remote = mergeOptions.getMergeRemote();
                                     listener.getLogger().println("Pushing HEAD to branch " + mergeOptions.getMergeTarget() + " of " + remote.getName() + " repository");
-                                    
-                                    git.push(remote, "HEAD:" + mergeOptions.getMergeTarget());
+
+                                    git.push(remote.getName(), "HEAD:" + mergeOptions.getMergeTarget());
                                 } else {
                                     //listener.getLogger().println("Pushing result " + buildnumber + " to origin repository");
                                     //git.push(null);
@@ -263,7 +266,7 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                     public Boolean invoke(File workspace,
                                                           VirtualChannel channel) throws IOException {
                                         
-                                        IGitAPI git = new GitAPI(gitExe, workspace,
+                                        IGitAPI git = new CliGitAPIImpl(gitExe, workspace,
                                                                  listener, environment);
                                         
                                         RemoteConfig remote = gitSCM.getRepositoryByName(targetRepo);
@@ -272,9 +275,10 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                             listener.getLogger().println("No repository found for target repo name " + targetRepo);
                                             return false;
                                         }
-                                        
+
+                                        boolean tagExists = git.tagExists(tagName.replace(' ', '_'));
                                         if (t.isCreateTag() || t.isUpdateTag()) {
-                                            if (git.tagExists(tagName) && !t.isUpdateTag()) {
+                                            if (tagExists && !t.isUpdateTag()) {
                                                 listener.getLogger().println("Tag " + tagName + " already exists and Create Tag is specified, so failing.");
                                                 return false;
                                             }
@@ -285,14 +289,14 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                                 git.tag(tagName, tagMessage);
                                             }
                                         }
-                                        else if (!git.tagExists(tagName)) {
+                                        else if (!tagExists) {
                                             listener.getLogger().println("Tag " + tagName + " does not exist and Create Tag is not specified, so failing.");
                                             return false;
                                         }
 
                                         listener.getLogger().println("Pushing tag " + tagName + " to repo "
                                                                      + targetRepo);
-                                        git.push(remote, tagName);
+                                        git.push(remote.getName(), tagName);
                                         
                                         return true;
                                     }
@@ -336,7 +340,7 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                     public Boolean invoke(File workspace,
                                                           VirtualChannel channel) throws IOException {
                                         
-                                        IGitAPI git = new GitAPI(gitExe, workspace,
+                                        IGitAPI git = new CliGitAPIImpl(gitExe, workspace,
                                                                  listener, environment);
                                         
                                         RemoteConfig remote = gitSCM.getRepositoryByName(targetRepo);
@@ -348,7 +352,7 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                         
                                         listener.getLogger().println("Pushing HEAD to branch " + branchName + " at repo "
                                                                      + targetRepo);
-                                        git.push(remote, "HEAD:" + branchName);
+                                        git.push(remote.getName(), "HEAD:" + branchName);
                                         
                                         return true;
                                     }
@@ -394,7 +398,7 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                     public Boolean invoke(File workspace,
                                                           VirtualChannel channel) throws IOException {
                                         
-                                        IGitAPI git = new GitAPI(gitExe, workspace,
+                                        IGitAPI git = new CliGitAPIImpl(gitExe, workspace,
                                                                  listener, environment);
 
                                         
@@ -411,9 +415,8 @@ public class GitPublisher extends Recorder implements Serializable, MatrixAggreg
                                         	git.addNote(    noteMsg, noteNamespace );
                                         else
                                         	git.appendNote( noteMsg, noteNamespace );
-                                        
-                                        
-                                        git.push(remote, "refs/notes/*" );
+
+                                        git.push(remote.getName(), "refs/notes/*" );
                                         
                                         return true;
                                     }

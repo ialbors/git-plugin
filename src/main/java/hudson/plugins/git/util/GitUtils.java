@@ -15,7 +15,7 @@ import hudson.slaves.NodeProperty;
 import hudson.model.StreamBuildListener;
 import hudson.plugins.git.Branch;
 import hudson.plugins.git.GitException;
-import hudson.plugins.git.IGitAPI;
+import hudson.plugins.git.client.IGitAPI;
 import hudson.plugins.git.Revision;
 
 import java.io.IOException;
@@ -58,8 +58,7 @@ public class GitUtils {
      */
     public Collection<Revision> getAllBranchRevisions() throws GitException, IOException {
         Map<ObjectId, Revision> revisions = new HashMap<ObjectId, Revision>();
-        List<Branch> branches = git.getRemoteBranches();
-        for (Branch b : branches) {
+        for (Branch b : git.getRemoteBranches()) {
             Revision r = revisions.get(b.getSHA1());
             if (r == null) {
                 r = new Revision(b.getSHA1());

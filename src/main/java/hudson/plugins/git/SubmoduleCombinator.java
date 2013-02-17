@@ -1,11 +1,10 @@
 package hudson.plugins.git;
 
-import hudson.FilePath;
 import hudson.model.TaskListener;
+import hudson.plugins.git.client.IGitAPI;
 import hudson.plugins.git.util.GitUtils;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,7 +25,7 @@ import org.eclipse.jgit.lib.ObjectId;
  * @author nigelmagnay
  */
 public class SubmoduleCombinator {
-    IGitAPI      git;
+    IGitAPI git;
     File         workspace;
     TaskListener listener;
 
@@ -48,9 +47,8 @@ public class SubmoduleCombinator {
         Map<IndexEntry, Collection<Revision>> moduleBranches = new HashMap<IndexEntry, Collection<Revision>>();
 
         for (IndexEntry submodule : git.getSubmodules("HEAD")) {
-            File subdir = new File(workspace, submodule.getFile());
-            IGitAPI subGit = new GitAPI(git.getGitExe(), subdir, listener, git.getEnvironment(), git.getReference());
-      
+            IGitAPI subGit = git.subGit(submodule.getFile());
+
             GitUtils gu = new GitUtils(listener, subGit);
             Collection<Revision> items = gu.filterTipBranches(gu.getAllBranchRevisions());
       
@@ -169,32 +167,12 @@ public class SubmoduleCombinator {
         for (Entry<IndexEntry, Revision> setting : settings.entrySet()) {
             IndexEntry submodule = setting.getKey();
             Revision branch = setting.getValue();
-            File subdir = new File(workspace, submodule.getFile());
-            IGitAPI subGit = new GitAPI(git.getGitExe(), subdir,
-                    listener, git.getEnvironment(), git.getReference());
-
+            IGitAPI subGit = git.subGit(submodule.getFile());
             subGit.checkout(branch.sha1.name());
             git.add(submodule.file);
         }
     
-        try {
-            File f = File.createTempFile("gitcommit", ".txt");
-            FileOutputStream fos = null;
-            try {
-                fos = new FileOutputStream(f);
-                fos.write(commit.toString().getBytes());
-            } finally {
-                if (fos != null)
-                    fos.close();
-            }
-            git.commit(f);
-            f.delete();
-        }
-        catch (IOException e) {
-            // TODO Auto-generated catch block
-            e.printStackTrace();
-        }
-
+        git.commit(commit.toString());
     }
 
     public int difference(Map<IndexEntry, Revision> item, List<IndexEntry> entries) {
