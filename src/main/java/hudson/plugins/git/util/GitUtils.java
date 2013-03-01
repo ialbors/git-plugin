@@ -10,6 +10,7 @@ import hudson.plugins.git.GitException;
 import hudson.plugins.git.Revision;
 import hudson.slaves.NodeProperty;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.revwalk.filter.RevFilter;
 import org.jenkinsci.plugins.gitclient.GitClient;
@@ -154,11 +155,8 @@ public class GitUtils {
         } catch (IOException e) {
             throw new GitException("Error computing merge base", e);
         } finally {
-            if (walk != null)
-                walk.release();
-            if (repository != null) {
-                repository.close();
-            }
+            if (walk != null) walk.release();
+            if (repository != null) repository.close();
         }
         if (log)
             LOGGER.fine(MessageFormat.format(
