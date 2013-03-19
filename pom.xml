@@ -7,7 +7,7 @@
   </parent>
 
   <artifactId>git</artifactId>
-  <version>1.2.0.1</version>
+  <version>1.3.0.1</version>
   <packaging>hpi</packaging>
   <name>Jenkins GIT plugin</name>
   <description>Integrates Jenkins with GIT SCM</description>
@@ -140,7 +140,7 @@
     <dependency>
       <groupId>org.jenkins-ci.plugins</groupId>
       <artifactId>git-client</artifactId>
-      <version>1.0.3</version>
+      <version>1.0.4</version>
     </dependency>
 
     <dependency><!-- we contribute AbstractBuildParameters for Git if it's available -->

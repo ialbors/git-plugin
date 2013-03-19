@@ -816,9 +816,14 @@ public class GitSCM extends SCM implements Serializable {
         }
     }
 
-    public GitTool resolveGitTool() {
+    public GitTool resolveGitTool(TaskListener listener) {
         if (gitTool == null) return GitTool.getDefaultInstallation();
-        return Hudson.getInstance().getDescriptorByType(GitTool.DescriptorImpl.class).getInstallation(gitTool);
+        GitTool git =  Hudson.getInstance().getDescriptorByType(GitTool.DescriptorImpl.class).getInstallation(gitTool);
+        if (git == null) {
+            listener.getLogger().println("selected Git installation does not exists. Using Default");
+            git = GitTool.getDefaultInstallation();
+        }
+        return git;
     }
 
     public String getGitExe(Node builtOn, TaskListener listener) {
@@ -829,7 +834,7 @@ public class GitSCM extends SCM implements Serializable {
      * Exposing so that we can get this from GitPublisher.
      */
     public String getGitExe(Node builtOn, EnvVars env, TaskListener listener) {
-        GitTool tool = resolveGitTool();
+        GitTool tool = resolveGitTool(listener);
         if (builtOn != null) {
             try {
                 tool = tool.forNode(builtOn, listener);
@@ -1283,7 +1288,7 @@ public class GitSCM extends SCM implements Serializable {
     private void computeChangeLog(GitClient git, Revision revToBuild, BuildListener listener, BuildData buildData, FilePath changelogFile, BuildChooserContext context) throws IOException, InterruptedException {
         int histories = 0;
 
-        PrintStream out = new PrintStream(changelogFile.write());
+        PrintStream out = new PrintStream(changelogFile.write(), false, "UTF-8");
         try {
             for (Branch b : revToBuild.getBranches()) {
                 Build lastRevWas = buildChooser.prevBuildForChangelog(b.getName(), buildData, git, context);
@@ -1318,7 +1323,7 @@ public class GitSCM extends SCM implements Serializable {
         } else {
             int histories = 0;
 
-            PrintStream out = new PrintStream(changelogFile.write());
+            PrintStream out = new PrintStream(changelogFile.write(), false, "UTF-8");
             try {
                 for (Branch b : revToBuild.getBranches()) {
                     putChangelogDiffs(git, b.getName(), remoteBranch, revToBuild.getSha1().name(), out);
@@ -1875,13 +1880,12 @@ public class GitSCM extends SCM implements Serializable {
 
     @Initializer(after=PLUGINS_STARTED)
     public static void onLoaded() {
-        GitTool.DescriptorImpl gitTools = Jenkins.getInstance().getDescriptorByType(GitTool.DescriptorImpl.class);
         DescriptorImpl desc = Jenkins.getInstance().getDescriptorByType(DescriptorImpl.class);
 
         if (desc.getOldGitExe() != null) {
             String exe = desc.getOldGitExe();
-            GitTool tool = gitTools.getInstallation(GitTool.DEFAULT);
-            if (tool.getGitExe().equals(exe)) {
+            String defaultGit = GitTool.getDefaultInstallation().getGitExe();
+            if (defaultGit.equals(exe)) {
                 return;
             }
             System.err.println("[WARNING] you're using deprecated gitexe attribute to configure git plugin. Use Git installations");
