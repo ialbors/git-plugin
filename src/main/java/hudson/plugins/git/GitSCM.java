@@ -973,12 +973,17 @@ public class GitSCM extends SCM implements Serializable {
 
                     boolean fetched = false;
                     for (RemoteConfig remoteRepository : repos) {
-                        fetched |= fetchFrom(git, listener, remoteRepository);
+                        try {
+                            fetched |= fetchFrom(git, listener, remoteRepository);
+                        } catch (GitException e) {
+                            fetched |= false;
+                        }
                     }
 
                     if (!fetched) {
                         listener.error("Could not fetch from any repository");
-                        throw new GitException("Could not fetch from any repository");
+                        // Throw IOException so the retry will be able to catch it
+                        throw new IOException("Could not fetch from any repository");
                     }
                     // Do we want to prune first?
                     if (pruneBranches) {
@@ -1010,7 +1015,8 @@ public class GitSCM extends SCM implements Serializable {
 
                     if (!successfullyCloned) {
                         listener.error("Could not clone repository");
-                        throw new GitException("Could not clone");
+                        // Throw IOException so the retry will be able to catch it
+                        throw new IOException("Could not clone");
                     }
 
                     boolean fetched = false;
@@ -1020,7 +1026,8 @@ public class GitSCM extends SCM implements Serializable {
 
                     if (!fetched) {
                         listener.error("Could not fetch from any repository");
-                        throw new GitException("Could not fetch from any repository");
+                        // Throw IOException so the retry will be able to catch it
+                        throw new IOException("Could not fetch from any repository");
                     }
 
                     if (clean) {
@@ -1087,7 +1094,7 @@ public class GitSCM extends SCM implements Serializable {
 
         final String gitExe = getGitExe(build.getBuiltOn(), listener);
 
-        final String buildnumber = "jenkins-" + projectName + "-" + buildNumber;
+        final String buildnumber = "jenkins-" + projectName.replace(" ", "_") + "-" + buildNumber;
 
         final BuildData buildData = getBuildData(build.getPreviousBuild(), true);
 
@@ -1158,6 +1165,7 @@ public class GitSCM extends SCM implements Serializable {
                         }
 
                         buildData.saveBuild(new Build(revToBuild, buildNumber, Result.FAILURE));
+                        build.addAction(buildData);
                         throw new AbortException("Branch not suitable for integration as it does not merge cleanly");
                     }
 
