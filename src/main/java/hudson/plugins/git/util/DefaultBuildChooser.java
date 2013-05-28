@@ -8,7 +8,6 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.jenkinsci.plugins.gitclient.GitClient;
 import org.kohsuke.stapler.DataBoundConstructor;
-import org.eclipse.jgit.lib.Repository;
 
 import java.io.IOException;
 import java.text.MessageFormat;

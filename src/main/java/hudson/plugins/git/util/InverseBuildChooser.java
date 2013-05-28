@@ -10,8 +10,6 @@ import org.kohsuke.stapler.DataBoundConstructor;
 import java.io.IOException;
 import java.util.*;
 
-import org.eclipse.jgit.lib.Repository;
-
 /**
  * Git build chooser which will select all branches <b>except</b> for those which match the
  * configured branch specifiers.
