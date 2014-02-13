@@ -3,13 +3,12 @@ package hudson.plugins.git;
 import hudson.MarkupText;
 import hudson.model.Hudson;
 import hudson.model.User;
+import hudson.model.UserProperty;
 import hudson.plugins.git.GitSCM.DescriptorImpl;
 import hudson.scm.ChangeLogAnnotator;
 import hudson.scm.ChangeLogSet;
 import hudson.scm.ChangeLogSet.AffectedFile;
 import hudson.scm.EditType;
-import hudson.tasks.Mailer;
-import hudson.tasks.Mailer.UserProperty;
 import org.kohsuke.stapler.export.Exported;
 import org.kohsuke.stapler.export.ExportedBean;
 
@@ -34,9 +33,7 @@ public class GitChangeSet extends ChangeLogSet.Entry {
     private static final String PREFIX_AUTHOR = "author ";
     private static final String PREFIX_COMMITTER = "committer ";
     private static final String IDENTITY = "([^<]*)<(.*)> (.*) (.*)";//starts with everything-but
-    private static final String PREFIX_BRANCH = "Changes in branch ";
-    private static final String BRANCH_PATTERN = "([-_a-zA-Z0-9/]*),";
-    
+
 
     private static final Pattern FILE_LOG_ENTRY = Pattern.compile("^:[0-9]{6} [0-9]{6} ([0-9a-f]{40}) ([0-9a-f]{40}) ([ACDMRTUX])(?>[0-9]+)?\t(.*)$");
     private static final Pattern AUTHOR_ENTRY = Pattern.compile("^"
@@ -44,10 +41,27 @@ public class GitChangeSet extends ChangeLogSet.Entry {
     private static final Pattern COMMITTER_ENTRY = Pattern.compile("^"
             + PREFIX_COMMITTER + IDENTITY + "$");
     private static final Pattern RENAME_SPLIT = Pattern.compile("^(.*?)\t(.*)$");
-    private static final Pattern BRANCH_ENTRY = Pattern.compile("^"
-            + PREFIX_BRANCH + BRANCH_PATTERN + " .*$");
-    
+
     private static final String NULL_HASH = "0000000000000000000000000000000000000000";
+    /**
+     * This is broken as a part of the 1.5 refactoring.
+     *
+     * <p>
+     * When we build a commit that multiple branches point to, Git plugin historically recorded
+     * changelogs "revOfBranchInPreviousBuild...revToBuild" for each branch separately. This
+     * however fails to take full generality of Git commit graph into account, as such rev-lists
+     * can share common commits, which then get reported multiple times.
+     *
+     * <p>
+     * In Git, a commit doesn't belong to a branch, in the sense that you cannot look at the object graph
+     * and re-construct exactly how branch has evolved. In that sense, trying to attribute commits to
+     * branches is a somewhat futile exercise.
+     *
+     * <p>
+     * On the other hand, if this is still deemed important, the right thing to do is to traverse
+     * the commit graph and see if a commit can be only reachable from the "revOfBranchInPreviousBuild" of
+     * just one branch, in which case it's safe to attribute the commit to that branch.
+     */
     private String branch;
     private String committer;
     private String committerEmail;
@@ -89,12 +103,6 @@ public class GitChangeSet extends ChangeLogSet.Entry {
             } else if (line.startsWith("tree ")) {
             } else if (line.startsWith("parent ")) {
                 this.parentCommit = line.split(" ")[1];
-            } else if (line.startsWith(PREFIX_BRANCH)) {
-                Matcher branchMatcher = BRANCH_ENTRY.matcher(line);
-                if (branchMatcher.matches()
-                        && branchMatcher.groupCount() >= 1) {
-                    this.branch = branchMatcher.group(1).trim();
-                }
             } else if (line.startsWith(PREFIX_COMMITTER)) {
                 Matcher committerMatcher = COMMITTER_ENTRY.matcher(line);
                 if (committerMatcher.matches()
@@ -259,7 +267,8 @@ public class GitChangeSet extends ChangeLogSet.Entry {
                 try {
                     user = User.get(csAuthorEmail, true);
                     user.setFullName(csAuthor);
-                    user.addProperty(new Mailer.UserProperty(csAuthorEmail));
+                    if (hasHudsonTasksMailer())
+                        setMail(user, csAuthorEmail);
                     user.save();
                 } catch (IOException e) {
                     // add logging statement?
@@ -272,21 +281,34 @@ public class GitChangeSet extends ChangeLogSet.Entry {
                 user = User.get(csAuthorEmail.split("@")[0], true);
         }
         // set email address for user if none is already available
-        if (fixEmpty(csAuthorEmail) != null && !isMailerPropertySet(user)) {
+        if (fixEmpty(csAuthorEmail) != null && hasHudsonTasksMailer() && !hasMail(user)) {
             try {
-                user.addProperty(new Mailer.UserProperty(csAuthorEmail));
+                setMail(user, csAuthorEmail);
             } catch (IOException e) {
-                // ignore error
+                // ignore
             }
         }
         return user;
     }
 
-	private boolean isMailerPropertySet(User user) {
-		UserProperty property = user.getProperty(Mailer.UserProperty.class);
-		return property != null
-            && property.hasExplicitlyConfiguredAddress();
+    private void setMail(User user, String csAuthorEmail) throws IOException {
+        user.addProperty(new hudson.tasks.Mailer.UserProperty(csAuthorEmail));
+    }
+
+    private boolean hasMail(User user) {
+        hudson.tasks.Mailer.UserProperty property = user.getProperty(hudson.tasks.Mailer.UserProperty.class);
+        return property != null && property.hasExplicitlyConfiguredAddress();
 	}
+
+    private boolean hasHudsonTasksMailer() {
+        // TODO convert to checking for mailer plugin as plugin migrates to 1.509+
+        try {
+            Class.forName("hudson.tasks.Mailer");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
 
 	private boolean isCreateAccountBasedOnEmail() {
         DescriptorImpl descriptor = (DescriptorImpl) Hudson.getInstance().getDescriptor(GitSCM.class);

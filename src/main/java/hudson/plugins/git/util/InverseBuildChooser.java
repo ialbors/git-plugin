@@ -1,10 +1,13 @@
 package hudson.plugins.git.util;
 
 import hudson.Extension;
+import hudson.EnvVars;
 import hudson.model.TaskListener;
 import hudson.plugins.git.*;
+import hudson.remoting.VirtualChannel;
 import org.eclipse.jgit.lib.Repository;
 import org.jenkinsci.plugins.gitclient.GitClient;
+import org.jenkinsci.plugins.gitclient.RepositoryCallback;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 import java.io.IOException;
@@ -39,6 +42,7 @@ public class InverseBuildChooser extends BuildChooser {
             String singleBranch, GitClient git, TaskListener listener,
             BuildData buildData, BuildChooserContext context) throws GitException, IOException, InterruptedException {
 
+        EnvVars env = context.getBuild().getEnvironment();
         GitUtils utils = new GitUtils(listener, git);
         List<Revision> branchRevs = new ArrayList<Revision>(utils.getAllBranchRevisions());
         List<BranchSpec> specifiedBranches = gitSCM.getBranches();
@@ -54,7 +58,7 @@ public class InverseBuildChooser extends BuildChooser {
                 // Check whether this branch matches a branch spec from the job config
                 for (BranchSpec spec : specifiedBranches) {
                     // If the branch matches, throw it away as we do *not* want to build it
-                    if (spec.matches(branch.getName()) || HEAD.matches(branch.getName())) {
+                    if (spec.matches(branch.getName(), env) || HEAD.matches(branch.getName(), env)) {
                         j.remove();
                         break;
                     }
@@ -90,13 +94,13 @@ public class InverseBuildChooser extends BuildChooser {
         }
 
         // Sort revisions by the date of commit, old to new, to ensure fairness in scheduling
-        Repository repository = utils.git.getRepository();
-        try {
-            Collections.sort(branchRevs, new CommitTimeComparator(repository));
-        } finally {
-            repository.close();
-        }
-        return branchRevs;
+        final List<Revision> in = branchRevs;
+        return utils.git.withRepository(new RepositoryCallback<List<Revision>>() {
+            public List<Revision> invoke(Repository repo, VirtualChannel channel) throws IOException, InterruptedException {
+                Collections.sort(in,new CommitTimeComparator(repo));
+                return in;
+            }
+        });
     }
 
     @Extension

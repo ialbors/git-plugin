@@ -1,6 +1,9 @@
 package hudson.plugins.git.util;
 
+import hudson.DescriptorExtensionList;
 import hudson.model.Descriptor;
+import jenkins.model.Jenkins;
+import hudson.model.Item;
 
 /**
  * @author Kohsuke Kawaguchi
@@ -14,5 +17,19 @@ public abstract class BuildChooserDescriptor extends Descriptor<BuildChooser> {
      */
     public String getLegacyId() {
         return null;
+    }
+
+    public static DescriptorExtensionList<BuildChooser,BuildChooserDescriptor> all() {
+        return Jenkins.getInstance().getDescriptorList(BuildChooser.class);
+    }
+
+    /**
+     * Returns true if this build chooser is applicable to the given job type.
+     *
+     * @param job the type of job or item.
+     * @return true to allow user to select this build chooser.
+     */
+    public boolean isApplicable(java.lang.Class<? extends Item> job) {
+        return true;
     }
 }

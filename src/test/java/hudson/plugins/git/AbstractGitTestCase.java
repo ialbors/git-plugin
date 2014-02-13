@@ -3,7 +3,11 @@ package hudson.plugins.git;
 import hudson.EnvVars;
 import hudson.FilePath;
 import hudson.model.*;
-import hudson.plugins.git.util.DefaultBuildChooser;
+import hudson.plugins.git.extensions.GitSCMExtension;
+import hudson.plugins.git.extensions.impl.DisableRemotePoll;
+import hudson.plugins.git.extensions.impl.PathRestriction;
+import hudson.plugins.git.extensions.impl.RelativeTargetDirectory;
+import hudson.plugins.git.extensions.impl.UserExclusion;
 import hudson.remoting.VirtualChannel;
 import hudson.slaves.EnvironmentVariablesNodeProperty;
 import hudson.util.StreamTaskListener;
@@ -13,6 +17,7 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.jenkinsci.plugins.gitclient.Git;
 import org.jenkinsci.plugins.gitclient.GitClient;
@@ -52,23 +57,25 @@ public abstract class AbstractGitTestCase extends HudsonTestCase {
         git = testRepo.git;
     }
 
-    protected void commit(final String fileName, final PersonIdent committer, final String message) throws GitException {
+    protected void commit(final String fileName, final PersonIdent committer, final String message)
+            throws GitException, InterruptedException {
     	testRepo.commit(fileName, committer, message);
     }
 
-    protected void commit(final String fileName, final String fileContent, final PersonIdent committer, final String message) throws GitException {
+    protected void commit(final String fileName, final String fileContent, final PersonIdent committer, final String message)
+
+            throws GitException, InterruptedException {
     	testRepo.commit(fileName, fileContent, committer, message);
     }
 
     protected void commit(final String fileName, final PersonIdent author, final PersonIdent committer,
-                        final String message) throws GitException {
+                        final String message) throws GitException, InterruptedException {
     	testRepo.commit(fileName, author, committer, message);
     }
 
     protected List<UserRemoteConfig> createRemoteRepositories() throws IOException {
         return testRepo.remoteConfigs();
     }
-
 
     protected FreeStyleProject setupProject(String branchString, boolean authorOrCommitter) throws Exception {
         return setupProject(branchString, authorOrCommitter, null);
@@ -111,15 +118,21 @@ public abstract class AbstractGitTestCase extends HudsonTestCase {
                                           String excludedUsers, String localBranch, boolean fastRemotePoll,
                                           String includedRegions) throws Exception {
         FreeStyleProject project = createFreeStyleProject();
-        project.setScm(new GitSCM(
-                null,
+        GitSCM scm = new GitSCM(
                 createRemoteRepositories(),
                 branches,
-                null,
-                false, Collections.<SubmoduleConfig>emptyList(), false,
-                false, new DefaultBuildChooser(), null, null, authorOrCommitter, relativeTargetDir, null,
-                excludedRegions, excludedUsers, localBranch, false, false, false, fastRemotePoll, null, null, false,
-                includedRegions, false, false));
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        scm.getExtensions().add(new DisableRemotePoll()); // don't work on a file:// repository
+        if (relativeTargetDir!=null)
+            scm.getExtensions().add(new RelativeTargetDirectory(relativeTargetDir));
+        if (excludedUsers!=null)
+            scm.getExtensions().add(new UserExclusion(excludedUsers));
+        if (excludedRegions!=null || includedRegions!=null)
+            scm.getExtensions().add(new PathRestriction(includedRegions,excludedRegions));
+
+        project.setScm(scm);
         project.getBuildersList().add(new CaptureEnvironmentBuilder());
         return project;
     }
@@ -172,7 +185,8 @@ public abstract class AbstractGitTestCase extends HudsonTestCase {
         return build.getWorkspace().act(new FilePath.FileCallable<String>() {
                 public String invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
                     try {
-                        return Git.with(null, null).in(f).getClient().getRepository().resolve("refs/heads/"+ branch).name();
+                        ObjectId oid = Git.with(null, null).in(f).getClient().getRepository().resolve("refs/heads/" + branch);
+                        return oid.name();
                     } catch (GitException e) {
                         throw new RuntimeException(e);
                     }

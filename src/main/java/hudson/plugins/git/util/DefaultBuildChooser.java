@@ -1,12 +1,15 @@
 package hudson.plugins.git.util;
 
 import hudson.Extension;
+import hudson.EnvVars;
 import hudson.model.TaskListener;
 import hudson.plugins.git.*;
+import hudson.remoting.VirtualChannel;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.jenkinsci.plugins.gitclient.GitClient;
+import org.jenkinsci.plugins.gitclient.RepositoryCallback;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 import java.io.IOException;
@@ -16,6 +19,9 @@ import java.util.*;
 import static java.util.Collections.emptyList;
 
 public class DefaultBuildChooser extends BuildChooser {
+    /* Ignore symbolic default branch ref. */
+    private static final BranchSpec HEAD = new BranchSpec("*/HEAD");
+
     @DataBoundConstructor
     public DefaultBuildChooser() {
     }
@@ -43,7 +49,7 @@ public class DefaultBuildChooser extends BuildChooser {
         // if the branch name contains more wildcards then the simple usecase
         // does not apply and we need to skip to the advanced usecase
         if (singleBranch == null || singleBranch.contains("*"))
-            return getAdvancedCandidateRevisions(isPollCall,listener,new GitUtils(listener,git),data);
+            return getAdvancedCandidateRevisions(isPollCall,listener,new GitUtils(listener,git),data, context);
 
         // check if we're trying to build a specific commit
         // this only makes sense for a build, there is no
@@ -82,9 +88,27 @@ public class DefaultBuildChooser extends BuildChooser {
                 revisions.addAll(getHeadRevision(isPollCall, fqbn, git, listener, data));
             }
         } else {
-            // singleBranch contains a '/', so is in most case a fully qualified branch
-            // doesn't seem we can distinguish unqualified branch with '/' in name, so expect users to fully qualify
-            revisions.addAll(getHeadRevision(isPollCall, singleBranch, git, listener, data));
+            // either the branch is qualified (first part should match a valid remote)
+            // or it is still unqualified, but the branch name contains a '/'
+            List<String> possibleQualifiedBranches = new ArrayList<String>();
+            boolean singleBranchIsQualified = false;
+            for (RemoteConfig config : gitSCM.getRepositories()) {
+                String repository = config.getName();
+                if (singleBranch.startsWith(repository + "/")) {
+                  singleBranchIsQualified = true;
+                  break;
+                }
+                String fqbn = repository + "/" + singleBranch;
+                verbose(listener, "Qualifying {0} as a branch in repository {1} -> {2}", singleBranch, repository, fqbn);
+                possibleQualifiedBranches.add(fqbn);
+            }
+            if (singleBranchIsQualified) {
+                revisions.addAll(getHeadRevision(isPollCall, singleBranch, git, listener, data));
+            } else {
+              for (String fqbn : possibleQualifiedBranches) {
+                revisions.addAll(getHeadRevision(isPollCall, fqbn, git, listener, data));
+              }
+            }
         }
 
         return revisions;
@@ -162,7 +186,9 @@ public class DefaultBuildChooser extends BuildChooser {
      * @throws IOException
      * @throws GitException
      */
-    private List<Revision> getAdvancedCandidateRevisions(boolean isPollCall, TaskListener listener, GitUtils utils, BuildData data) throws GitException, IOException, InterruptedException {
+    private List<Revision> getAdvancedCandidateRevisions(boolean isPollCall, TaskListener listener, GitUtils utils, BuildData data, BuildChooserContext context) throws GitException, IOException, InterruptedException {
+        EnvVars env = context.getBuild().getEnvironment();
+
         // 1. Get all the (branch) revisions that exist
         List<Revision> revs = new ArrayList<Revision>(utils.getAllBranchRevisions());
         verbose(listener, "Starting with all the branches: {0}", revs);
@@ -177,7 +203,7 @@ public class DefaultBuildChooser extends BuildChooser {
                 Branch b = j.next();
                 boolean keep = false;
                 for (BranchSpec bspec : gitSCM.getBranches()) {
-                    if (bspec.matches(b.getName())) {
+                    if (bspec.matches(b.getName(), env)) {
                         keep = true;
                         break;
                     }
@@ -186,6 +212,17 @@ public class DefaultBuildChooser extends BuildChooser {
                 if (!keep) {
                     verbose(listener, "Ignoring {0} because it doesn''t match branch specifier", b);
                     j.remove();
+                }
+            }
+            
+            // filter out HEAD ref if it's not the only ref
+            if (r.getBranches().size() > 1) {
+                for (Iterator<Branch> j = r.getBranches().iterator(); j.hasNext();) {
+                    Branch b = j.next();
+                    if (HEAD.matches(b.getName(), env)) {
+                    	verbose(listener, "Ignoring {0} because there''s named branch for this revision", b.getName());
+                    	j.remove();
+                    }
                 }
             }
 
@@ -203,32 +240,40 @@ public class DefaultBuildChooser extends BuildChooser {
 
         // 4. Finally, remove any revisions that have already been built.
         verbose(listener, "Removing what''s already been built: {0}", data.getBuildsByBranchName());
+        Revision lastBuiltRevision = data.getLastBuiltRevision();
         for (Iterator<Revision> i = revs.iterator(); i.hasNext();) {
             Revision r = i.next();
 
             if (data.hasBeenBuilt(r.getSha1())) {
                 i.remove();
+                
+                // keep track of new branches pointing to the last built revision
+                if (lastBuiltRevision != null && lastBuiltRevision.getSha1().equals(r.getSha1())) {
+                	lastBuiltRevision = r;
+                }
             }
         }
         verbose(listener, "After filtering out what''s already been built: {0}", revs);
 
         // if we're trying to run a build (not an SCM poll) and nothing new
-        // was found then just run the last build again
-        if (!isPollCall && revs.isEmpty() && data.getLastBuiltRevision() != null) {
+        // was found then just run the last build again but ensure that the branch list
+        // is ordered according to the configuration. Sorting the branch list ensures
+        // a deterministic value for GIT_BRANCH and allows a git-flow style workflow
+        // with fast-forward merges between branches
+        if (!isPollCall && revs.isEmpty() && lastBuiltRevision != null) {
             verbose(listener, "Nothing seems worth building, so falling back to the previously built revision: {0}", data.getLastBuiltRevision());
-            return Collections.singletonList(data.getLastBuiltRevision());
+            return Collections.singletonList(utils.sortBranchesForRevision(lastBuiltRevision, gitSCM.getBranches(), env));
         }
 
         // 5. sort them by the date of commit, old to new
         // this ensures the fairness in scheduling.
-        Repository repository = utils.git.getRepository();
-        try {
-            Collections.sort(revs,new CommitTimeComparator(repository));
-        } finally {
-            repository.close();
-        }
-
-        return revs;
+        final List<Revision> in = revs;
+        return utils.git.withRepository(new RepositoryCallback<List<Revision>>() {
+            public List<Revision> invoke(Repository repo, VirtualChannel channel) throws IOException, InterruptedException {
+                Collections.sort(in,new CommitTimeComparator(repo));
+                return in;
+            }
+        });
     }
 
     /**

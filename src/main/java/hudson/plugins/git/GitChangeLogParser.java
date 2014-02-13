@@ -2,7 +2,12 @@ package hudson.plugins.git;
 
 import hudson.model.AbstractBuild;
 import hudson.scm.ChangeLogParser;
+
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.LineIterator;
 import org.xml.sax.SAXException;
+
+import javax.annotation.Nonnull;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -12,6 +17,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,44 +34,48 @@ public class GitChangeLogParser extends ChangeLogParser {
         super();
         this.authorOrCommitter = authorOrCommitter;
     }
+
+    public List<GitChangeSet> parse(@Nonnull List<String> changelog) {
+        return parse(changelog.iterator());
+    }
+
     public GitChangeSetList parse(AbstractBuild build, File changelogFile)
         throws IOException, SAXException {
         
         Set<GitChangeSet> r = new LinkedHashSet<GitChangeSet>();
         
         // Parse the log file into GitChangeSet items - each one is a commit
-        
-        BufferedReader rdr = new BufferedReader(new InputStreamReader(new FileInputStream(changelogFile), Charset.forName("UTF-8")));
-        
+        LineIterator lineIterator = null;
         try {
-            String line;
-            // We use the null value to determine whether at least one commit was
-            // present in the changelog. If it stays null, there is no commit line.
-            List<String> lines = null;
-            
-            while ((line = rdr.readLine()) != null) {
-                if (line.startsWith("commit ")) {
-                    if (lines != null) {
-                        r.add(parseCommit(lines, authorOrCommitter));
-                    }
-                    lines = new ArrayList<String>();
-                }
-		
-                if (lines != null && lines.size()<THRESHOLD)
-                    lines.add(line);    // TODO: if we ignored some lines, tell the user so.
-            }
-            
-            if (lines != null) {
-                r.add(parseCommit(lines, authorOrCommitter));
-            }
-            
-            return new GitChangeSetList(build, new ArrayList<GitChangeSet>(r));
-        }
-        finally {
-            rdr.close();
+        	lineIterator = FileUtils.lineIterator(changelogFile);
+        	return new GitChangeSetList(build, parse(lineIterator));
+        } finally {
+        	LineIterator.closeQuietly(lineIterator);
         }
     }
-    
+
+    private List<GitChangeSet> parse(Iterator<String> changelog) {
+        Set<GitChangeSet> r = new LinkedHashSet<GitChangeSet>();
+        List<String> lines = null;
+        while (changelog.hasNext()) {
+            String line = changelog.next();
+            if (line.startsWith("commit ")) {
+                if (lines != null) {
+                    r.add(parseCommit(lines, authorOrCommitter));
+                }
+                lines = new ArrayList<String>();
+            }
+
+            if (lines != null && lines.size()<THRESHOLD)
+                lines.add(line);    // TODO: if we ignored some lines, tell the user so.
+        }
+
+        if (lines != null) {
+            r.add(parseCommit(lines, authorOrCommitter));
+        }
+        return new ArrayList<GitChangeSet>(r);
+    }
+
     private GitChangeSet parseCommit(List<String> lines, boolean authorOrCommitter) {
         return new GitChangeSet(lines, authorOrCommitter);
     }
