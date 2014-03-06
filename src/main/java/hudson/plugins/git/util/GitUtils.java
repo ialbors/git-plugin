@@ -26,6 +26,13 @@ import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import org.jenkinsci.lib.envinject.EnvInjectException;
+import org.jenkinsci.lib.envinject.EnvInjectLogger;
+import org.jenkinsci.plugins.envinject.EnvInjectJobPropertyInfo;
+import org.jenkinsci.plugins.envinject.EnvInjectJobProperty;
+import org.jenkinsci.plugins.envinject.service.EnvInjectEnvVars;
+import org.eclipse.jgit.lib.Repository;
+
 public class GitUtils implements Serializable {
     GitClient git;
     TaskListener listener;
@@ -254,6 +261,24 @@ public class GitUtils implements Serializable {
 
         EnvVars.resolve(env);
 
+        if (Hudson.getInstance().getPlugin("envinject") != null) {
+        	
+        	EnvInjectJobProperty envInjectProperties = (EnvInjectJobProperty)p.getProperty(EnvInjectJobProperty.class);
+        	EnvInjectJobPropertyInfo info = envInjectProperties.getInfo();
+        	
+        	EnvInjectLogger logger = new EnvInjectLogger(listener);
+        	EnvInjectEnvVars envInjectEnvVarsService = new EnvInjectEnvVars(logger);
+        	try{
+        		Map<String, String> propertiesEnvVars = envInjectEnvVarsService.getEnvVarsPropertiesJobProperty(ws, logger, info.isLoadFilesFromMaster(), info.getPropertiesFilePath(), info.getPropertiesContentMap(null), null, null);
+        	
+        		env.putAll(propertiesEnvVars);
+        	}
+        	catch(EnvInjectException e){
+        		e.printStackTrace();
+        	}
+      	        	
+        }
+        
         return env;
     }
 
