@@ -28,6 +28,11 @@ public class GitWeb extends GitRepositoryBrowser {
     }
 
     @Override
+    protected boolean getNormalizeUrl() {
+		return false;
+    }
+
+    @Override
     public URL getChangeSetLink(GitChangeSet changeSet) throws IOException {
         URL url = getUrl();
 
