@@ -1,40 +1,40 @@
 package hudson.plugins.git;
 
+import com.google.common.base.Function;
+import com.google.common.collect.Collections2;
 import com.google.common.collect.Lists;
-
 import hudson.EnvVars;
 import hudson.FilePath;
+import hudson.Launcher;
+import hudson.matrix.Axis;
+import hudson.matrix.AxisList;
+import hudson.matrix.MatrixBuild;
+import hudson.matrix.MatrixProject;
 import hudson.model.*;
+import hudson.plugins.git.browser.GitRepositoryBrowser;
+import hudson.plugins.git.browser.GithubWeb;
 import hudson.plugins.git.GitSCM.BuildChooserContextImpl;
+import hudson.plugins.git.GitSCM.DescriptorImpl;
 import hudson.plugins.git.browser.GitRepositoryBrowser;
 import hudson.plugins.git.browser.GithubWeb;
 import hudson.plugins.git.extensions.GitSCMExtension;
-import hudson.plugins.git.extensions.impl.AuthorInChangelog;
-import hudson.plugins.git.extensions.impl.CleanBeforeCheckout;
-import hudson.plugins.git.extensions.impl.LocalBranch;
-import hudson.plugins.git.extensions.impl.PreBuildMerge;
-import hudson.plugins.git.extensions.impl.RelativeTargetDirectory;
-import hudson.plugins.git.extensions.impl.SparseCheckoutPath;
-import hudson.plugins.git.extensions.impl.SparseCheckoutPaths;
+import hudson.plugins.git.extensions.impl.*;
 import hudson.plugins.git.util.BuildChooserContext;
 import hudson.plugins.git.util.BuildChooserContext.ContextCallable;
+import hudson.plugins.git.util.GitUtils;
 import hudson.plugins.parameterizedtrigger.BuildTrigger;
 import hudson.plugins.parameterizedtrigger.ResultCondition;
 import hudson.remoting.Callable;
 import hudson.remoting.Channel;
 import hudson.remoting.VirtualChannel;
+import hudson.scm.ChangeLogSet;
 import hudson.scm.PollingResult;
 import hudson.slaves.DumbSlave;
 import hudson.slaves.EnvironmentVariablesNodeProperty.Entry;
-import hudson.plugins.git.GitSCM.DescriptorImpl;
 import hudson.tools.ToolProperty;
 import hudson.util.IOException2;
-
-import com.google.common.base.Function;
-import com.google.common.collect.Collections2;
-
 import hudson.util.StreamTaskListener;
-
+import java.io.ByteArrayOutputStream;
 import org.apache.commons.io.FileUtils;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.PersonIdent;
@@ -49,6 +49,8 @@ import org.jvnet.hudson.test.TestExtension;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.ObjectStreamException;
+import java.io.Serializable;
 import java.util.*;
 
 /**
@@ -56,17 +58,6 @@ import java.util.*;
  * @author ishaaq
  */
 public class GitSCMTest extends AbstractGitTestCase {
-
-    @Override
-    protected void tearDown() throws Exception
-    {
-        try { //Avoid test failures due to failed cleanup tasks
-            super.tearDown();
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
     
     /**
      * Basic test - create a GitSCM based project, check it out and build for the first time.
@@ -311,8 +302,9 @@ public class GitSCMTest extends AbstractGitTestCase {
      * With multiple branches specified in the project and having commits from a user
      * excluded should not build the excluded revisions when another branch changes.
      */
+    /*
     @Bug(value = 8342)
-    public void testMultipleBranchWithExcludedUser() throws Exception { /*
+    public void testMultipleBranchWithExcludedUser() throws Exception {
         final String branch1 = "Branch1";
         final String branch2 = "Branch2";
 
@@ -378,7 +370,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue("scm polling should detect changes in 'Branch1' branch", project.poll(listener).hasChanges());
 
         build(project, Result.SUCCESS, branch1File1, branch1File2, branch1File3);
-    */ }
+    } */
 
     public void testBasicExcludedUser() throws Exception {
         FreeStyleProject project = setupProject("master", false, null, null, "Jane Doe", null);
@@ -564,14 +556,31 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect commit2 change because it is not in the branch we are tracking.", project.poll(listener).hasChanges());
     }
 
-    public void testBranchIsAvailableInEvironment() throws Exception {
+    private String checkoutString(FreeStyleProject project, String envVar) {
+        return "checkout -f " + getEnvVars(project).get(envVar);
+    }
+
+    public void testEnvVarsAvailable() throws Exception {
         FreeStyleProject project = setupSimpleProject("master");
 
         final String commitFile1 = "commitFile1";
         commit(commitFile1, johnDoe, "Commit number 1");
-        build(project, Result.SUCCESS, commitFile1);
+        FreeStyleBuild build1 = build(project, Result.SUCCESS, commitFile1);
 
         assertEquals("origin/master", getEnvVars(project).get(GitSCM.GIT_BRANCH));
+        assertLogContains(getEnvVars(project).get(GitSCM.GIT_BRANCH), build1);
+
+        assertLogContains(checkoutString(project, GitSCM.GIT_COMMIT), build1);
+
+        final String commitFile2 = "commitFile2";
+        commit(commitFile2, johnDoe, "Commit number 2");
+        FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
+
+        assertLogNotContains(checkoutString(project, GitSCM.GIT_PREVIOUS_COMMIT), build2);
+        assertLogContains(checkoutString(project, GitSCM.GIT_PREVIOUS_COMMIT), build1);
+
+        assertLogNotContains(checkoutString(project, GitSCM.GIT_PREVIOUS_SUCCESSFUL_COMMIT), build2);
+        assertLogContains(checkoutString(project, GitSCM.GIT_PREVIOUS_SUCCESSFUL_COMMIT), build1);
     }
 
     // For HUDSON-7411
@@ -885,6 +894,40 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
+    @Bug(20392)
+    public void testMergeChangelog() throws Exception {
+        FreeStyleProject project = setupSimpleProject("master");
+
+        GitSCM scm = new GitSCM(
+                createRemoteRepositories(),
+                Collections.singletonList(new BranchSpec("*")),
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "default")));
+        project.setScm(scm);
+
+        // create initial commit and then run the build against it:
+        // Here the changelog is by default empty (because changelog for first commit is always empty
+        commit("commitFileBase", johnDoe, "Initial Commit");
+        testRepo.git.branch("integration");
+        build(project, Result.SUCCESS, "commitFileBase");
+
+        // Create second commit and run build
+        // Here the changelog should contain exactly this one new commit
+        testRepo.git.checkout("master", "topic2");
+        final String commitFile2 = "commitFile2";
+        String commitMessage = "Commit number 2";
+        commit(commitFile2, johnDoe, commitMessage);
+        final FreeStyleBuild build2 = build(project, Result.SUCCESS, commitFile2);
+
+        ChangeLogSet<? extends ChangeLogSet.Entry> changeLog = build2.getChangeSet();
+        assertEquals("Changelog should contain one item", 1, changeLog.getItems().length);
+
+        GitChangeSet singleChange = (GitChangeSet) changeLog.getItems()[0];
+        assertEquals("Changelog should contain commit number 2", commitMessage, singleChange.getComment().trim());
+    }
+
     public void testMergeWithSlave() throws Exception {
         FreeStyleProject project = setupSimpleProject("master");
         project.setAssignedLabel(createSlave().getSelfLabel());
@@ -997,6 +1040,49 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
+
+    public void testMergeWithMatrixBuild() throws Exception {
+        
+        //Create a matrix project and a couple of axes
+        MatrixProject project = createMatrixProject("xyz");
+        project.setAxes(new AxisList(new Axis("VAR","a","b")));
+        
+        GitSCM scm = new GitSCM(
+                createRemoteRepositories(),
+                Collections.singletonList(new BranchSpec("*")),
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null)));
+        project.setScm(scm);
+
+        // create initial commit and then run the build against it:
+        commit("commitFileBase", johnDoe, "Initial Commit");
+        testRepo.git.branch("integration");
+        build(project, Result.SUCCESS, "commitFileBase");
+        
+        
+        testRepo.git.checkout(null, "topic1");
+        final String commitFile1 = "commitFile1";
+        commit(commitFile1, johnDoe, "Commit number 1");
+        final MatrixBuild build1 = build(project, Result.SUCCESS, commitFile1);
+        assertTrue(build1.getWorkspace().child(commitFile1).exists());
+
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
+        // do what the GitPublisher would do
+        testRepo.git.deleteBranch("integration");
+        testRepo.git.checkout("topic1", "integration");
+
+        testRepo.git.checkout("master", "topic2");
+        final String commitFile2 = "commitFile2";
+        commit(commitFile2, johnDoe, "Commit number 2");
+        assertTrue("scm polling did not detect commit2 change", project.poll(listener).hasChanges());
+        final MatrixBuild build2 = build(project, Result.SUCCESS, commitFile2);
+        assertTrue(build2.getWorkspace().child(commitFile2).exists());
+        assertBuildStatusSuccess(build2);
+        assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
+    }
+
     public void testEnvironmentVariableExpansion() throws Exception {
         FreeStyleProject project = createFreeStyleProject();
         project.setScm(new GitSCM("${CAT}"+testRepo.gitDir.getPath()));
@@ -1031,33 +1117,33 @@ public class GitSCMTest extends AbstractGitTestCase {
         return repoList;
     }
 
-//    /**
-//     * Makes sure that git browser URL is preserved across config round trip.
-//     */
-//    @Bug(22604)
-//    public void testConfigRoundtripURLPreserved() throws Exception {
-//        FreeStyleProject p = createFreeStyleProject();
-//        final String url = "https://github.com/jenkinsci/jenkins";
-//        GitRepositoryBrowser browser = new GithubWeb(url);
-//        GitSCM scm = new GitSCM(createRepoList(url),
-//                                Collections.singletonList(new BranchSpec("")),
-//                                false, Collections.<SubmoduleConfig>emptyList(),
-//                                browser, null, null);
-//        p.setScm(scm);
-//        configRoundtrip(p);
-//        assertEqualDataBoundBeans(scm,p.getScm());
-//    }
-//
-//    /**
-//     * Makes sure that the configuration form works.
-//     */
-//    public void testConfigRoundtrip() throws Exception {
-//        FreeStyleProject p = createFreeStyleProject();
-//        GitSCM scm = new GitSCM("https://github.com/jenkinsci/jenkins");
-//        p.setScm(scm);
-//        configRoundtrip(p);
-//        assertEqualDataBoundBeans(scm,p.getScm());
-//    }
+    /**
+     * Makes sure that git browser URL is preserved across config round trip.
+     */
+    @Bug(22604)
+    public void testConfigRoundtripURLPreserved() throws Exception {
+        FreeStyleProject p = createFreeStyleProject();
+        final String url = "https://github.com/jenkinsci/jenkins";
+        GitRepositoryBrowser browser = new GithubWeb(url);
+        GitSCM scm = new GitSCM(createRepoList(url),
+                                Collections.singletonList(new BranchSpec("")),
+                                false, Collections.<SubmoduleConfig>emptyList(),
+                                browser, null, null);
+        p.setScm(scm);
+        configRoundtrip(p);
+        assertEqualDataBoundBeans(scm,p.getScm());
+    }
+
+    /**
+     * Makes sure that the configuration form works.
+     */
+    public void testConfigRoundtrip() throws Exception {
+        FreeStyleProject p = createFreeStyleProject();
+        GitSCM scm = new GitSCM("https://github.com/jenkinsci/jenkins");
+        p.setScm(scm);
+        configRoundtrip(p);
+        assertEqualDataBoundBeans(scm,p.getScm());
+    }
 
     /**
      * Sample configuration that should result in no extensions at all
@@ -1222,6 +1308,125 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertTrue(build1.getWorkspace().child(commitFile2).exists());
         assertFalse(build1.getWorkspace().child("toto").exists());
         assertFalse(build1.getWorkspace().child(commitFile1).exists());
+    }
+
+    /**
+     * Test for JENKINS-22009.
+     *
+     * @throws Exception
+     */
+    public void testPolling_environmentValueInBranchSpec() throws Exception {
+        // create parameterized project with environment value in branch specification
+        FreeStyleProject project = createFreeStyleProject();
+        GitSCM scm = new GitSCM(
+                createRemoteRepositories(),
+                Collections.singletonList(new BranchSpec("${MY_BRANCH}")),
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        project.setScm(scm);
+        project.addProperty(new ParametersDefinitionProperty(new StringParameterDefinition("MY_BRANCH", "master")));
+
+        // commit something in order to create an initial base version in git
+        commit("toto/commitFile1", johnDoe, "Commit number 1");
+
+        // build the project
+        build(project, Result.SUCCESS);
+
+        assertFalse("No changes to git since last build, thus no new build is expected", project.poll(listener).hasChanges());
+    }
+
+    private final class FakeParametersAction implements EnvironmentContributingAction, Serializable {
+        // Test class for testPolling_environmentValueAsEnvironmentContributingAction test case
+        final ParametersAction m_forwardingAction;
+
+        public FakeParametersAction(StringParameterValue params) {
+            this.m_forwardingAction = new ParametersAction(params);
+        }
+
+        public void buildEnvVars(AbstractBuild<?, ?> ab, EnvVars ev) {
+            this.m_forwardingAction.buildEnvVars(ab, ev);
+        }
+
+        public String getIconFileName() {
+            return this.m_forwardingAction.getIconFileName();
+        }
+
+        public String getDisplayName() {
+            return this.m_forwardingAction.getDisplayName();
+        }
+
+        public String getUrlName() {
+            return this.m_forwardingAction.getUrlName();
+        }
+
+        public List<ParameterValue> getParameters() {
+            return this.m_forwardingAction.getParameters();
+        }
+
+        private void writeObject(java.io.ObjectOutputStream out) throws IOException {
+        }
+
+        private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
+        }
+
+        private void readObjectNoData() throws ObjectStreamException {
+        }
+    }
+
+    private boolean gitVersionAtLeast(int neededMajor, int neededMinor) throws IOException, InterruptedException {
+        final TaskListener procListener = StreamTaskListener.fromStderr();
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        final int returnCode = new Launcher.LocalLauncher(procListener).launch().cmds("git", "--version").stdout(out).join();
+        assertEquals("git --version non-zero return code", 0, returnCode);
+        assertFalse("Process listener logged an error", procListener.getLogger().checkError());
+        final String versionOutput = out.toString().trim();
+        final String[] fields = versionOutput.split(" ")[2].replaceAll("msysgit.", "").split("\\.");
+        final int gitMajor = Integer.parseInt(fields[0]);
+        final int gitMinor = Integer.parseInt(fields[1]);
+        return gitMajor >= neededMajor && gitMinor >= neededMinor;
+    }
+
+    /**
+     * Test for JENKINS-24467.
+     *
+     * @throws Exception
+     */
+    public void testPolling_environmentValueAsEnvironmentContributingAction() throws Exception {
+        // create parameterized project with environment value in branch specification
+        FreeStyleProject project = createFreeStyleProject();
+        GitSCM scm = new GitSCM(
+                createRemoteRepositories(),
+                Collections.singletonList(new BranchSpec("${MY_BRANCH}")),
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        project.setScm(scm);
+
+        // Inital commit and build
+        commit("toto/commitFile1", johnDoe, "Commit number 1");
+        String brokenPath = "\\broken/path\\of/doom";
+        if (!gitVersionAtLeast(1, 8)) {
+            /* Git 1.7.10.4 fails the first build unless the git-upload-pack
+             * program is available in its PATH.
+             * Later versions of git don't have that problem.
+             */
+            final String systemPath = System.getenv("PATH");
+            brokenPath = systemPath + File.pathSeparator + brokenPath;
+        }
+        final StringParameterValue real_param = new StringParameterValue("MY_BRANCH", "master");
+        final StringParameterValue fake_param = new StringParameterValue("PATH", brokenPath);
+
+        final Action[] actions = {new ParametersAction(real_param), new FakeParametersAction(fake_param)};
+
+        FreeStyleBuild first_build = project.scheduleBuild2(0, new Cause.UserCause(), actions).get();
+        assertBuildStatus(Result.SUCCESS, first_build);
+
+        Launcher launcher = workspace.createLauncher(listener);
+        final EnvVars environment = GitUtils.getPollEnvironment(project, workspace, launcher, listener);
+
+        assertEquals(environment.get("MY_BRANCH"), "master");
+        assertNotSame("Enviroment path should not be broken path", environment.get("PATH"), brokenPath);
     }
 
     private void setupJGit(GitSCM git) {

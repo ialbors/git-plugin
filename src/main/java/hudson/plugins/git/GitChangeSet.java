@@ -64,7 +64,6 @@ public class GitChangeSet extends ChangeLogSet.Entry {
      * the commit graph and see if a commit can be only reachable from the "revOfBranchInPreviousBuild" of
      * just one branch, in which case it's safe to attribute the commit to that branch.
      */
-    private String branch;
     private String committer;
     private String committerEmail;
     private String committerTime;
@@ -178,7 +177,7 @@ public class GitChangeSet extends ChangeLogSet.Entry {
         // legacy mode
         int i = s.indexOf(' ');
         long time = Long.parseLong(s.substring(0,i));
-        return FastDateFormat.getInstance(ISO_8601).format(new Date(time)) + s.substring(i);
+        return FastDateFormat.getInstance(ISO_8601).format(new Date(time * 1000)) + s.substring(i);
     }
 
     private String parseHash(String hash) {
@@ -248,6 +247,9 @@ public class GitChangeSet extends ChangeLogSet.Entry {
      */
     public User findOrCreateUser(String csAuthor, String csAuthorEmail, boolean createAccountBasedOnEmail) {
         User user;
+        if (csAuthor == null) {
+            return User.getUnknown();
+        }
         if (createAccountBasedOnEmail) {
             user = User.get(csAuthorEmail, false);
 
@@ -298,8 +300,12 @@ public class GitChangeSet extends ChangeLogSet.Entry {
         }
     }
 
-	private boolean isCreateAccountBasedOnEmail() {
-        DescriptorImpl descriptor = (DescriptorImpl) Hudson.getInstance().getDescriptor(GitSCM.class);
+    private boolean isCreateAccountBasedOnEmail() {
+        Hudson hudson = Hudson.getInstance();
+        if (hudson == null) {
+            return false;
+        }
+        DescriptorImpl descriptor = (DescriptorImpl) hudson.getDescriptor(GitSCM.class);
 
         return descriptor.isCreateAccountBasedOnEmail();
     }
@@ -320,10 +326,6 @@ public class GitChangeSet extends ChangeLogSet.Entry {
             csAuthorEmail = this.committerEmail;
         }
 
-        if (csAuthor == null) {
-            throw new RuntimeException("No author in changeset " + id);
-        }
-
         return findOrCreateUser(csAuthor, csAuthorEmail, isCreateAccountBasedOnEmail());
     }
 
@@ -337,8 +339,6 @@ public class GitChangeSet extends ChangeLogSet.Entry {
     public String getAuthorName() {
         // If true, use the author field from git log rather than the committer.
         String csAuthor = authorOrCommitter ? author : committer;
-        if (csAuthor == null)
-            throw new RuntimeException("No author in changeset " + id);
         return csAuthor;
     }
 
@@ -374,7 +374,7 @@ public class GitChangeSet extends ChangeLogSet.Entry {
     }
 
     public String getBranch() {
-        return this.branch;
+        return null;
     }
 
     @ExportedBean(defaultVisibility=999)

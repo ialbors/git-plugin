@@ -8,14 +8,12 @@ import hudson.EnvVars;
 import hudson.Extension;
 import hudson.Util;
 import hudson.model.AbstractDescribableImpl;
-import hudson.model.AbstractProject;
 import hudson.model.Descriptor;
 import hudson.model.Item;
 import hudson.model.TaskListener;
 import hudson.security.ACL;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
-import jenkins.model.Jenkins;
 import org.jenkinsci.plugins.gitclient.Git;
 import org.jenkinsci.plugins.gitclient.GitClient;
 import org.jenkinsci.plugins.gitclient.GitURIRequirementsBuilder;
@@ -76,8 +74,11 @@ public class UserRemoteConfig extends AbstractDescribableImpl<UserRemoteConfig> 
     @Extension
     public static class DescriptorImpl extends Descriptor<UserRemoteConfig> {
 
-        public ListBoxModel doFillCredentialsIdItems(@AncestorInPath AbstractProject project,
+        public ListBoxModel doFillCredentialsIdItems(@AncestorInPath Item project,
                                                      @QueryParameter String url) {
+            if (project == null || !project.hasPermission(Item.CONFIGURE)) {
+                return new StandardListBoxModel();
+            }
             return new StandardListBoxModel()
                     .withEmptySelection()
                     .withMatching(
@@ -89,15 +90,15 @@ public class UserRemoteConfig extends AbstractDescribableImpl<UserRemoteConfig> 
                     );
         }
 
-        public FormValidation doCheckCredentialsId(@AncestorInPath AbstractProject project,
+        public FormValidation doCheckCredentialsId(@AncestorInPath Item project,
                                                    @QueryParameter String url,
                                                    @QueryParameter String value) {
-            value = Util.fixEmptyAndTrim(value);
-            if (value == null) {
+            if (project == null || !project.hasPermission(Item.CONFIGURE)) {
                 return FormValidation.ok();
             }
 
-            if (!Jenkins.getInstance().hasPermission(Item.CONFIGURE)) {
+            value = Util.fixEmptyAndTrim(value);
+            if (value == null) {
                 return FormValidation.ok();
             }
 
@@ -126,9 +127,13 @@ public class UserRemoteConfig extends AbstractDescribableImpl<UserRemoteConfig> 
             return FormValidation.ok();
         }
 
-        public FormValidation doCheckUrl(@AncestorInPath AbstractProject project,
+        public FormValidation doCheckUrl(@AncestorInPath Item project,
                                          @QueryParameter String credentialsId,
                                          @QueryParameter String value) throws IOException, InterruptedException {
+
+            if (project == null || !project.hasPermission(Item.CONFIGURE)) {
+                return FormValidation.ok();
+            }
 
             String url = Util.fixEmptyAndTrim(value);
             if (url == null)
@@ -136,9 +141,6 @@ public class UserRemoteConfig extends AbstractDescribableImpl<UserRemoteConfig> 
 
             if (url.indexOf('$') >= 0)
                 // set by variable, can't validate
-                return FormValidation.ok();
-
-            if (!Jenkins.getInstance().hasPermission(Item.CONFIGURE))
                 return FormValidation.ok();
 
             // get git executable on master
@@ -159,7 +161,7 @@ public class UserRemoteConfig extends AbstractDescribableImpl<UserRemoteConfig> 
             return FormValidation.ok();
         }
 
-        private static StandardCredentials lookupCredentials(AbstractProject project, String credentialId, String uri) {
+        private static StandardCredentials lookupCredentials(Item project, String credentialId, String uri) {
             return (credentialId == null) ? null : CredentialsMatchers.firstOrNull(
                         CredentialsProvider.lookupCredentials(StandardCredentials.class, project, ACL.SYSTEM,
                                 GitURIRequirementsBuilder.fromUri(uri).build()),

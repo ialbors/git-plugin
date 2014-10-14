@@ -1,5 +1,6 @@
 package hudson.plugins.git.util;
 
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 import hudson.Functions;
 import hudson.model.AbstractBuild;
 import hudson.model.Action;
@@ -131,14 +132,22 @@ public class BuildData implements Action, Serializable, Cloneable {
     	for(Branch branch : build.marked.getBranches()) {
             buildsByBranchName.put(fixNull(branch.getName()), build);
     	}
+        for(Branch branch : build.revision.getBranches()) {
+            buildsByBranchName.put(fixNull(branch.getName()), build);
+        }
     }
 
     public Build getLastBuildOfBranch(String branch) {
         return buildsByBranchName.get(branch);
     }
 
+    /**
+     * Gets revision of the previous build.
+     * @return revision of the last build. 
+     *    May be null will be returned if nothing has been checked out (e.g. due to wrong repository or branch)
+     */
     @Exported
-    public Revision getLastBuiltRevision() {
+    public @CheckForNull Revision getLastBuiltRevision() {
         return lastBuild==null?null:lastBuild.revision;
     }
 

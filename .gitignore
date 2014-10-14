@@ -8,6 +8,9 @@ bin
 *.iws
 work
 nbactions.xml
+nb-configuration.xml
 release.properties
 pom.xml.releaseBackup
 .idea
+*.sublime-project
+*.sublime-workspace

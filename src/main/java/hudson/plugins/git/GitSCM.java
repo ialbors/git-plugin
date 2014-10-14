@@ -22,6 +22,7 @@ import hudson.plugins.git.extensions.GitSCMExtension;
 import hudson.plugins.git.extensions.GitSCMExtensionDescriptor;
 import hudson.plugins.git.extensions.impl.AuthorInChangelog;
 import hudson.plugins.git.extensions.impl.BuildChooserSetting;
+import hudson.plugins.git.extensions.impl.ChangelogToBranch;
 import hudson.plugins.git.extensions.impl.PreBuildMerge;
 import hudson.plugins.git.opt.PreBuildMergeOptions;
 import hudson.plugins.git.util.Build;
@@ -113,6 +114,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
     public static final String GIT_BRANCH = "GIT_BRANCH";
     public static final String GIT_COMMIT = "GIT_COMMIT";
     public static final String GIT_PREVIOUS_COMMIT = "GIT_PREVIOUS_COMMIT";
+    public static final String GIT_PREVIOUS_SUCCESSFUL_COMMIT = "GIT_PREVIOUS_SUCCESSFUL_COMMIT";
 
     /**
      * All the configured extensions attached to this.
@@ -497,7 +499,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
     private static Node workspaceToNode(FilePath workspace) { // TODO https://trello.com/c/doFFMdUm/46-filepath-getcomputer
         Jenkins j = Jenkins.getInstance();
-        if (workspace.isRemote()) {
+        if (workspace != null && workspace.isRemote()) {
             for (Computer c : j.getComputers()) {
                 if (c.getChannel() == workspace.getChannel()) {
                     Node n = c.getNode();
@@ -540,10 +542,15 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
             String gitRepo = getParamExpandedRepos(lastBuild, listener).get(0).getURIs().get(0).toString();
             ObjectId head = git.getHeadRev(gitRepo, getBranches().get(0).getName());
-
-            if (head != null && buildData.lastBuild.getMarked().getSha1().equals(head)) {
-                return NO_CHANGES;
+            if (head != null){
+                listener.getLogger().println("[poll] Latest remote head revision is: " + head.getName());
+                if (buildData.lastBuild.getMarked().getSha1().equals(head)) {
+                    return NO_CHANGES;
+                } else {
+                    return BUILD_NOW;
+                }
             } else {
+                listener.getLogger().println("[poll] Couldn't get remote head revision");
                 return BUILD_NOW;
             }
         }
@@ -592,7 +599,10 @@ public class GitSCM extends GitSCMBackwardCompatibility {
      */
     public GitClient createClient(TaskListener listener, EnvVars environment, Run<?,?> build, FilePath workspace) throws IOException, InterruptedException {
         FilePath ws = workingDirectory(build.getParent(), workspace, environment, listener);
-        ws.mkdirs(); // ensure it exists
+        /* ws will be null if the node which ran the build is offline */
+        if (ws != null) {
+            ws.mkdirs(); // ensure it exists
+        }
         return createClient(listener,environment, build.getParent(), workspaceToNode(workspace), ws);
     }
 
@@ -807,8 +817,9 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                                               final GitClient git,
                                               final TaskListener listener) throws IOException, InterruptedException {
         PrintStream log = listener.getLogger();
+        Collection<Revision> candidates = Collections.EMPTY_LIST;
 
-        // every MatrixRun should build the exact same commit ID
+        // every MatrixRun should build the same marked commit ID
         if (build instanceof MatrixRun) {
             MatrixBuild parentBuild = ((MatrixRun) build).getParentBuild();
             if (parentBuild != null) {
@@ -816,47 +827,57 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 if (parentBuildData != null) {
                     Build lastBuild = parentBuildData.lastBuild;
                     if (lastBuild!=null)
-                        return lastBuild;
+                        candidates = Collections.singleton(lastBuild.getMarked());
                 }
             }
         }
 
         // parameter forcing the commit ID to build
-        final RevisionParameterAction rpa = build.getAction(RevisionParameterAction.class);
-        if (rpa != null)
-            return new Build(rpa.toRevision(git), build.getNumber(), null);
+        if (candidates.isEmpty() ) {
+            final RevisionParameterAction rpa = build.getAction(RevisionParameterAction.class);
+            if (rpa != null) {
+                candidates = Collections.singleton(rpa.toRevision(git));
+            }
+        }
 
-        final String singleBranch = environment.expand( getSingleBranch(environment) );
+        if (candidates.isEmpty() ) {
+            final String singleBranch = environment.expand( getSingleBranch(environment) );
 
-        final BuildChooserContext context = new BuildChooserContextImpl(build.getParent(), build, environment);
-        Collection<Revision> candidates = getBuildChooser().getCandidateRevisions(
-                false, singleBranch, git, listener, buildData, context);
+            final BuildChooserContext context = new BuildChooserContextImpl(build.getParent(), build, environment);
+            candidates = getBuildChooser().getCandidateRevisions(
+                    false, singleBranch, git, listener, buildData, context);
+        }
 
-        if (candidates.size() == 0) {
+        if (candidates.isEmpty()) {
             // getBuildCandidates should make the last item the last build, so a re-build
             // will build the last built thing.
             throw new AbortException("Couldn't find any revision to build. Verify the repository and branch configuration for this job.");
         }
+
+        Revision marked = candidates.iterator().next();
+        Revision rev = marked;
+        // Modify the revision based on extensions
+        for (GitSCMExtension ext : extensions) {
+            rev = ext.decorateRevisionToBuild(this,build,git,listener,rev);
+        }
+        Build revToBuild = new Build(marked, rev, build.getNumber(), null);
+        buildData.saveBuild(revToBuild);
 
         if (candidates.size() > 1) {
             log.println("Multiple candidate revisions");
             Job<?, ?> job = build.getParent();
             if (job instanceof AbstractProject) {
                 AbstractProject project = (AbstractProject) job;
-            if (!project.isDisabled()) {
-                log.println("Scheduling another build to catch up with " + project.getFullDisplayName());
-                if (!project.scheduleBuild(0, new SCMTrigger.SCMTriggerCause())) {
-                    log.println("WARNING: multiple candidate revisions, but unable to schedule build of " + project.getFullDisplayName());
+                if (!project.isDisabled()) {
+                    log.println("Scheduling another build to catch up with " + project.getFullDisplayName());
+                    if (!project.scheduleBuild(0, new SCMTrigger.SCMTriggerCause("This build was triggered by build "
+                            + build.getNumber() + " because more than one build candidate was found."))) {
+                        log.println("WARNING: multiple candidate revisions, but unable to schedule build of " + project.getFullDisplayName());
+                    }
                 }
             }
-            }
         }
-        Revision rev = candidates.iterator().next();
-        Revision marked = rev;
-        for (GitSCMExtension ext : extensions) {
-            rev = ext.decorateRevisionToBuild(this,build,git,listener,rev);
-        }
-        return new Build(marked, rev, build.getNumber(), null);
+        return revToBuild;
     }
 
     /**
@@ -941,7 +962,6 @@ public class GitSCM extends GitSCMBackwardCompatibility {
             throw new IOException("Could not checkout " + revToBuild.revision.getSha1String(), e);
         }
 
-        buildData.saveBuild(revToBuild);
         build.addAction(new GitTagAction(build, workspace, buildData));
 
         if (changelogFile != null) {
@@ -1004,13 +1024,21 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         changelog.includes(revToBuild.getSha1());
         try {
             boolean exclusion = false;
-            for (Branch b : revToBuild.getBranches()) {
-                Build lastRevWas = getBuildChooser().prevBuildForChangelog(b.getName(), previousBuildData, git, context);
-                if (lastRevWas != null && git.isCommitInRepo(lastRevWas.getSHA1())) {
-                    changelog.excludes(lastRevWas.getSHA1());
-                    exclusion = true;
+            ChangelogToBranch changelogToBranch = getExtensions().get(ChangelogToBranch.class);
+            if (changelogToBranch != null) {
+                listener.getLogger().println("Using 'Changelog to branch' strategy.");
+                changelog.excludes(changelogToBranch.getOptions().getRef());
+                exclusion = true;
+            } else {
+                for (Branch b : revToBuild.getBranches()) {
+                    Build lastRevWas = getBuildChooser().prevBuildForChangelog(b.getName(), previousBuildData, git, context);
+                    if (lastRevWas != null && git.isCommitInRepo(lastRevWas.getSHA1())) {
+                        changelog.excludes(lastRevWas.getSHA1());
+                        exclusion = true;
+                    }
                 }
             }
+
             if (!exclusion) {
                 // this is the first time we are building this branch, so there's no base line to compare against.
                 // if we force the changelog, it'll contain all the changes in the repo, which is not what we want.
@@ -1038,6 +1066,11 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 String prevCommit = getLastBuiltCommitOfBranch(build, branch);
                 if (prevCommit != null) {
                     env.put(GIT_PREVIOUS_COMMIT, prevCommit);
+                }
+
+                String prevSuccessfulCommit = getLastSuccessfulBuiltCommitOfBranch(build, branch);
+                if (prevSuccessfulCommit != null) {
+                    env.put(GIT_PREVIOUS_SUCCESSFUL_COMMIT, prevSuccessfulCommit);
                 }
             }
 
@@ -1082,6 +1115,21 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 }
             }
         }
+        return prevCommit;
+    }
+
+    private String getLastSuccessfulBuiltCommitOfBranch(AbstractBuild<?, ?> build, Branch branch) {
+        String prevCommit = null;
+        if (build.getPreviousSuccessfulBuild() != null) {
+            final Build lastSuccessfulBuildOfBranch = fixNull(getBuildData(build.getPreviousSuccessfulBuild())).getLastBuildOfBranch(branch.getName());
+            if (lastSuccessfulBuildOfBranch != null) {
+                Revision previousRev = lastSuccessfulBuildOfBranch.getRevision();
+                if (previousRev != null) {
+                    prevCommit = previousRev.getSha1String();
+                }
+            }
+        }
+
         return prevCommit;
     }
 
