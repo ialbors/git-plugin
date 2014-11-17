@@ -208,6 +208,9 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
     private void updateFromUserData() throws GitException {
         // do what newInstance used to do directly from the request data
+        if (userRemoteConfigs == null) {
+            return; /* Prevent NPE when no remote config defined */
+        }
         try {
             String[] pUrls = new String[userRemoteConfigs.size()];
             String[] repoNames = new String[userRemoteConfigs.size()];
@@ -411,6 +414,10 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
     @Exported
     public List<UserRemoteConfig> getUserRemoteConfigs() {
+        if (userRemoteConfigs == null) {
+            /* Prevent NPE when no remote config defined */
+            userRemoteConfigs = new ArrayList<UserRemoteConfig>();
+        }
         return Collections.unmodifiableList(userRemoteConfigs);
     }
 
@@ -446,12 +453,26 @@ public class GitSCM extends GitSCMBackwardCompatibility {
      */
     private String getSingleBranch(EnvVars env) {
         // if we have multiple branches skip to advanced usecase
-        if (getBranches().size() != 1 || getRepositories().size() != 1) {
+        if (getBranches().size() != 1) {
             return null;
         }
-
         String branch = getBranches().get(0).getName();
-        String repository = getRepositories().get(0).getName();
+        String repository = null;
+
+        if (getRepositories().size() != 1) {
+        	for (RemoteConfig repo : getRepositories()) {
+        		if (branch.startsWith(repo.getName() + "/")) {
+        			repository = repo.getName();
+        			break;
+        		}
+        	}
+        	if (repository == null) {
+        		return null;
+        	}
+        } else {
+        	repository = getRepositories().get(0).getName();
+        }
+
 
         // replace repository wildcard with repository name
         if (branch.startsWith("*/")) {
@@ -858,7 +879,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         Revision rev = marked;
         // Modify the revision based on extensions
         for (GitSCMExtension ext : extensions) {
-            rev = ext.decorateRevisionToBuild(this,build,git,listener,rev);
+            rev = ext.decorateRevisionToBuild(this,build,git,listener,marked,rev);
         }
         Build revToBuild = new Build(marked, rev, build.getNumber(), null);
         buildData.saveBuild(revToBuild);
@@ -908,13 +929,22 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 }
                 cmd.execute();
             } catch (GitException ex) {
-                ex.printStackTrace(listener.error("Error cloning remote repo '%s'", rc.getName()));
-                throw new AbortException();
+                String message = "Error cloning remote repo '" + rc.getName() + "'";
+                listener.error(message);
+                throw new AbortException(message);
             }
         }
 
         for (RemoteConfig remoteRepository : repos) {
-            fetchFrom(git, listener, remoteRepository);
+            try {
+                fetchFrom(git, listener, remoteRepository);
+            } catch (GitException ex) {
+                /* Allow retry by throwing AbortException instead of
+                 * GitException. See JENKINS-20531. */
+                String message = "Error fetching remote repo '" + remoteRepository.getName() + "'";
+                listener.error(message);
+                throw new AbortException(message);
+            }
         }
     }
 
