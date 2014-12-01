@@ -23,6 +23,7 @@ import hudson.plugins.git.extensions.impl.*;
 import hudson.plugins.git.util.BuildChooserContext;
 import hudson.plugins.git.util.BuildChooserContext.ContextCallable;
 import hudson.plugins.git.util.BuildData;
+import hudson.plugins.git.util.DefaultBuildChooser;
 import hudson.plugins.git.util.GitUtils;
 import hudson.plugins.parameterizedtrigger.BuildTrigger;
 import hudson.plugins.parameterizedtrigger.ResultCondition;
@@ -62,6 +63,7 @@ import java.io.Serializable;
 import java.net.URI;
 import java.net.URL;
 import java.util.*;
+import org.eclipse.jgit.transport.RemoteConfig;
 
 /**
  * Tests for {@link GitSCM}.
@@ -866,6 +868,35 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
+    @Bug(25639)
+    public void testCommitDetectedOnlyOnceInMultipleRepositories() throws Exception {
+        FreeStyleProject project = setupSimpleProject("master");
+
+        TestGitRepo secondTestRepo = new TestGitRepo("secondRepo", this, listener);
+        List<UserRemoteConfig> remotes = new ArrayList<UserRemoteConfig>();
+        remotes.addAll(testRepo.remoteConfigs());
+        remotes.addAll(secondTestRepo.remoteConfigs());
+
+        GitSCM gitSCM = new GitSCM(
+                remotes,
+                Collections.singletonList(new BranchSpec("origin/master")),
+                false, Collections.<SubmoduleConfig>emptyList(),
+                null, null,
+                Collections.<GitSCMExtension>emptyList());
+        project.setScm(gitSCM);
+
+        commit("commitFile1", johnDoe, "Commit number 1");
+        FreeStyleBuild build = build(project, Result.SUCCESS, "commitFile1");
+
+        commit("commitFile2", johnDoe, "Commit number 2");
+        git = Git.with(listener, new EnvVars()).in(build.getWorkspace()).getClient();
+        for (RemoteConfig remoteConfig : gitSCM.getRepositories()) {
+            git.fetch_().from(remoteConfig.getURIs().get(0), remoteConfig.getFetchRefSpecs());
+        }
+        Collection<Revision> candidateRevisions = ((DefaultBuildChooser) (gitSCM).getBuildChooser()).getCandidateRevisions(false, "origin/master", git, listener, project.getLastBuild().getAction(BuildData.class), null);
+        assertEquals(1, candidateRevisions.size());
+    }
+
     public void testMerge() throws Exception {
         FreeStyleProject project = setupSimpleProject("master");
 
@@ -1554,14 +1585,13 @@ public class GitSCMTest extends AbstractGitTestCase {
     private boolean notifyCommit(FreeStyleProject project, ObjectId commitId) throws Exception {
         final int initialBuildNumber = project.getLastBuild().getNumber();
         final String commit1 = ObjectId.toString(commitId);
-        final URI gitRepo = testRepo.gitDir.toURI();
 
         final int port = server.getConnectors()[0].getLocalPort();
         if (port < 0) {
             throw new IllegalStateException("Could not locate Jetty server port");
         }
         final String notificationPath = "http://localhost:" + Integer.toString(port)
-                + "/git/notifyCommit?url=" + gitRepo + "&sha1=" + commit1;
+                + "/git/notifyCommit?url=" + testRepo.gitDir.toString() + "&sha1=" + commit1;
         final URL notifyUrl = new URL(notificationPath);
         final InputStream is = notifyUrl.openStream();
         IOUtils.toString(is);
