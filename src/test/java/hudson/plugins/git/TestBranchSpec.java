@@ -8,6 +8,7 @@ import junit.framework.TestCase;
 
 public class TestBranchSpec extends TestCase {
     public void testMatch() {
+
         BranchSpec l = new BranchSpec("master");
         Assert.assertTrue(l.matches("origin/master"));
         Assert.assertFalse(l.matches("origin/something/master"));
@@ -37,7 +38,7 @@ public class TestBranchSpec extends TestCase {
         Assert.assertTrue(n.matches("origin/my.branch/b1"));
         Assert.assertFalse(n.matches("origin/my-branch/b1"));
         Assert.assertFalse(n.matches("remote/origin/my.branch/b1"));
-        Assert.assertFalse(n.matches("remotes/origin/my.branch/b1"));
+        Assert.assertTrue(n.matches("remotes/origin/my.branch/b1"));
       
         BranchSpec o = new BranchSpec("**");
         
@@ -145,5 +146,14 @@ public class TestBranchSpec extends TestCase {
     	assertFalse(m.matches("origin/prefix_123"));
     	assertFalse(m.matches("origin/prefix"));
     	assertFalse(m.matches("origin/prefix-abc"));
+    }
+
+    public void testUsesJavaPatternWithRepetition() {
+    	// match pattern from JENKINS-26842
+    	BranchSpec m = new BranchSpec(":origin/release-\\d{8}");
+    	assertTrue(m.matches("origin/release-20150101"));
+    	assertFalse(m.matches("origin/release-2015010"));
+    	assertFalse(m.matches("origin/release-201501011"));
+    	assertFalse(m.matches("origin/release-20150101-something"));
     }
 }

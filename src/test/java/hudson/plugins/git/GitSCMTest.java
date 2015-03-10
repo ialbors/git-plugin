@@ -12,8 +12,6 @@ import hudson.matrix.AxisList;
 import hudson.matrix.MatrixBuild;
 import hudson.matrix.MatrixProject;
 import hudson.model.*;
-import hudson.plugins.git.browser.GitRepositoryBrowser;
-import hudson.plugins.git.browser.GithubWeb;
 import hudson.plugins.git.GitSCM.BuildChooserContextImpl;
 import hudson.plugins.git.GitSCM.DescriptorImpl;
 import hudson.plugins.git.browser.GitRepositoryBrowser;
@@ -40,7 +38,6 @@ import hudson.util.StreamTaskListener;
 
 import java.io.ByteArrayOutputStream;
 
-import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.eclipse.jgit.lib.Constants;
@@ -48,11 +45,7 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
-import org.jenkinsci.plugins.gitclient.Git;
-import org.jenkinsci.plugins.gitclient.GitClient;
-import org.jenkinsci.plugins.gitclient.JGitTool;
-import org.jenkinsci.plugins.gitclient.RepositoryCallback;
-import org.jvnet.hudson.test.Bug;
+import org.jenkinsci.plugins.gitclient.*;
 import org.jvnet.hudson.test.TestExtension;
 
 import java.io.File;
@@ -60,10 +53,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectStreamException;
 import java.io.Serializable;
-import java.net.URI;
 import java.net.URL;
 import java.util.*;
 import org.eclipse.jgit.transport.RemoteConfig;
+import org.jvnet.hudson.test.Issue;
 
 /**
  * Tests for {@link GitSCM}.
@@ -283,7 +276,7 @@ public class GitSCMTest extends AbstractGitTestCase {
 
         
     }
-    @Bug(value = 8342)
+    @Issue("JENKINS-8342")
     public void testExcludedRegionMultiCommit() throws Exception {
         // Got 2 projects, each one should only build if changes in its own file
         FreeStyleProject clientProject = setupProject("master", false, null, ".*serverFile", null, null);
@@ -315,7 +308,7 @@ public class GitSCMTest extends AbstractGitTestCase {
      * excluded should not build the excluded revisions when another branch changes.
      */
     /*
-    @Bug(value = 8342)
+    @Issue("JENKINS-8342")
     public void testMultipleBranchWithExcludedUser() throws Exception {
         final String branch1 = "Branch1";
         final String branch2 = "Branch2";
@@ -701,13 +694,13 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after last build", project.poll(listener).hasChanges());
     }
 
-    @Bug(19037)
+    @Issue("JENKINS-19037")
     @SuppressWarnings("ResultOfObjectAllocationIgnored")
     public void testBlankRepositoryName() throws Exception {
         new GitSCM(null);
     }
 
-    @Bug(10060)
+    @Issue("JENKINS-10060")
     public void testSubmoduleFixup() throws Exception {
         File repo = createTmpDir();
         FilePath moduleWs = new FilePath(repo);
@@ -868,7 +861,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
-    @Bug(25639)
+    @Issue("JENKINS-25639")
     public void testCommitDetectedOnlyOnceInMultipleRepositories() throws Exception {
         FreeStyleProject project = setupSimpleProject("master");
 
@@ -906,7 +899,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 false, Collections.<SubmoduleConfig>emptyList(),
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "default")));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "default", MergeCommand.GitPluginFastForwardMode.FF)));
         project.setScm(scm);
 
         // create initial commit and then run the build against it:
@@ -935,7 +928,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
 
-    @Bug(20392)
+    @Issue("JENKINS-20392")
     public void testMergeChangelog() throws Exception {
         FreeStyleProject project = setupSimpleProject("master");
 
@@ -945,7 +938,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 false, Collections.<SubmoduleConfig>emptyList(),
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "default")));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "default", MergeCommand.GitPluginFastForwardMode.FF)));
         project.setScm(scm);
 
         // create initial commit and then run the build against it:
@@ -979,7 +972,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 false, Collections.<SubmoduleConfig>emptyList(),
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null)));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null, null)));
         project.setScm(scm);
 
         // create initial commit and then run the build against it:
@@ -1018,7 +1011,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
         project.setScm(scm);
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "")));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", "", MergeCommand.GitPluginFastForwardMode.FF)));
 
         // create initial commit and then run the build against it:
         commit("commitFileBase", johnDoe, "Initial Commit");
@@ -1044,7 +1037,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertFalse("scm polling should not detect any more changes after build", project.poll(listener).hasChanges());
     }
     
-    @Bug(25191)
+    @Issue("JENKINS-25191")
     public void testMultipleMergeFailed() throws Exception {
     	FreeStyleProject project = setupSimpleProject("master");
     	
@@ -1055,8 +1048,8 @@ public class GitSCMTest extends AbstractGitTestCase {
     			null, null,
     			Collections.<GitSCMExtension>emptyList());
     	project.setScm(scm);
-    	scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration1", "")));
-    	scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration2", "")));
+	scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration1", "", MergeCommand.GitPluginFastForwardMode.FF)));
+	scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration2", "", MergeCommand.GitPluginFastForwardMode.FF)));
     	
     	commit("dummyFile", johnDoe, "Initial Commit");
     	testRepo.git.branch("integration1");
@@ -1085,7 +1078,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 false, Collections.<SubmoduleConfig>emptyList(),
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null)));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null, null)));
         project.setScm(scm);
 
         // create initial commit and then run the build against it:
@@ -1125,7 +1118,7 @@ public class GitSCMTest extends AbstractGitTestCase {
                 false, Collections.<SubmoduleConfig>emptyList(),
                 null, null,
                 Collections.<GitSCMExtension>emptyList());
-        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null)));
+        scm.getExtensions().add(new PreBuildMerge(new UserMergeOptions("origin", "integration", null, null)));
         project.setScm(scm);
 
         // create initial commit and then run the build against it:
@@ -1192,7 +1185,7 @@ public class GitSCMTest extends AbstractGitTestCase {
     /**
      * Makes sure that git browser URL is preserved across config round trip.
      */
-    @Bug(22604)
+    @Issue("JENKINS-22604")
     public void testConfigRoundtripURLPreserved() throws Exception {
         FreeStyleProject p = createFreeStyleProject();
         final String url = "https://github.com/jenkinsci/jenkins";
@@ -1241,7 +1234,7 @@ public class GitSCMTest extends AbstractGitTestCase {
         assertBuildStatus(Result.FAILURE, p.scheduleBuild2(0).get());
     }
 
-    @Bug(19108)
+    @Issue("JENKINS-19108")
     public void testCheckoutToSpecificBranch() throws Exception {
         FreeStyleProject p = createFreeStyleProject();
         GitSCM git = new GitSCM("https://github.com/imod/dummy-tester.git");
