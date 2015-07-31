@@ -4,12 +4,7 @@ import edu.umd.cs.findbugs.annotations.Nullable;
 import hudson.Extension;
 import hudson.ExtensionPoint;
 import hudson.Util;
-import hudson.model.AbstractModelObject;
-import hudson.model.AbstractProject;
-import hudson.model.Cause;
-import hudson.model.CauseAction;
-import hudson.model.Item;
-import hudson.model.UnprotectedRootAction;
+import hudson.model.*;
 import hudson.plugins.git.extensions.impl.IgnoreNotifyCommit;
 import hudson.scm.SCM;
 import hudson.security.ACL;
@@ -17,11 +12,12 @@ import hudson.triggers.SCMTrigger;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.servlet.ServletException;
+import javax.servlet.http.HttpServletRequest;
+
 import static javax.servlet.http.HttpServletResponse.SC_BAD_REQUEST;
 import static javax.servlet.http.HttpServletResponse.SC_OK;
 import jenkins.model.Jenkins;
@@ -57,17 +53,27 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
         return "git";
     }
 
-    public HttpResponse doNotifyCommit(@QueryParameter(required=true) String url,
+    public HttpResponse doNotifyCommit(HttpServletRequest request, @QueryParameter(required=true) String url,
                                        @QueryParameter(required=false) String branches,
                                        @QueryParameter(required=false) String sha1) throws ServletException, IOException {
         URIish uri;
+        List<ParameterValue> buildParameters = new ArrayList<ParameterValue>();
+
         try {
             uri = new URIish(url);
         } catch (URISyntaxException e) {
             return HttpResponses.error(SC_BAD_REQUEST, new Exception("Illegal URL: " + url, e));
         }
 
+        final Map<String, String[]> parameterMap = request.getParameterMap();
+        for (Map.Entry<String, String[]> entry : parameterMap.entrySet()) {
+            if (!(entry.getKey().equals("url")) && !(entry.getKey().equals("branches")) && !(entry.getKey().equals("sha1")))
+                if (entry.getValue()[0] != null)
+                    buildParameters.add(new StringParameterValue(entry.getKey(), entry.getValue()[0]));
+        }
+
         branches = Util.fixEmptyAndTrim(branches);
+
         String[] branchesArray;
         if (branches == null) {
             branchesArray = new String[0];
@@ -77,7 +83,7 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
 
         final List<ResponseContributor> contributors = new ArrayList<ResponseContributor>();
         for (Listener listener : Jenkins.getInstance().getExtensionList(Listener.class)) {
-            contributors.addAll(listener.onNotifyCommit(uri, sha1, branchesArray));
+            contributors.addAll(listener.onNotifyCommit(uri, sha1, buildParameters, branchesArray));
         }
 
         return new HttpResponse() {
@@ -172,8 +178,15 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
         }
 
         public List<ResponseContributor> onNotifyCommit(URIish uri, @Nullable String sha1, String... branches) {
+            List<ParameterValue> buildParameters = Collections.EMPTY_LIST;
+            return onNotifyCommit(uri, sha1, buildParameters, branches);
+        }
+
+        public List<ResponseContributor> onNotifyCommit(URIish uri, @Nullable String sha1, List<ParameterValue> buildParameters, String... branches) {
             return Collections.EMPTY_LIST;
         }
+
+
     }
 
     /**
@@ -189,7 +202,11 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
          * {@inheritDoc}
          */
         @Override
-        public List<ResponseContributor> onNotifyCommit(URIish uri, String sha1, String... branches) {
+        public List<ResponseContributor> onNotifyCommit(URIish uri, String sha1, List<ParameterValue> buildParameters, String... branches) {
+            if (LOGGER.isLoggable(Level.FINE)) {
+                LOGGER.fine("Received notification for uri = " + uri + " ; sha1 = " + sha1 + " ; branches = " + Arrays.toString(branches));
+            }
+
             List<ResponseContributor> result = new ArrayList<ResponseContributor>();
             // run in high privilege to see all the projects anonymous users don't see.
             // this is safe because when we actually schedule a build, it's a build that can
@@ -226,20 +243,33 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
                             }
 
                             SCMTrigger trigger = scmTriggerItem.getSCMTrigger();
-                            if (trigger != null && trigger.isIgnorePostCommitHooks()) {
-                                LOGGER.info("PostCommitHooks are disabled on " + project.getFullDisplayName());
+                            if (trigger == null || trigger.isIgnorePostCommitHooks()) {
+                                LOGGER.info("no trigger, or post-commit hooks disabled, on " + project.getFullDisplayName());
                                 continue;
                             }
 
-                            Boolean branchFound = false;
+                            boolean branchFound = false,
+                                    parametrizedBranchSpec = false;
                             if (branches.length == 0) {
                                 branchFound = true;
                             } else {
                                 OUT: for (BranchSpec branchSpec : git.getBranches()) {
-                                    for (String branch : branches) {
-                                        if (branchSpec.matches(repository.getName() + "/" + branch)) {
-                                            branchFound = true;
-                                            break OUT;
+                                    if (branchSpec.getName().contains("$")) {
+                                        // If the branchspec is parametrized, always run the polling
+                                        if (LOGGER.isLoggable(Level.FINE)) {
+                                            LOGGER.fine("Branch Spec is parametrized for " + project.getFullDisplayName() + ". ");
+                                        }
+                                        branchFound = true;
+                                        parametrizedBranchSpec = true;
+                                    } else {
+                                        for (String branch : branches) {
+                                            if (branchSpec.matches(repository.getName() + "/" + branch)) {
+                                                if (LOGGER.isLoggable(Level.FINE)) {
+                                                    LOGGER.fine("Branch Spec " + branchSpec + " matches modified branch " + branch + " for " + project.getFullDisplayName() + ". ");
+                                                }
+                                                branchFound = true;
+                                                break OUT;
+                                            }
                                         }
                                     }
                                 }
@@ -248,13 +278,13 @@ public class GitStatus extends AbstractModelObject implements UnprotectedRootAct
                             urlFound = true;
 
                             if (!(project instanceof AbstractProject && ((AbstractProject) project).isDisabled())) {
-                                if (isNotEmpty(sha1)) {
+                                if (!parametrizedBranchSpec && isNotEmpty(sha1)) {
                                     LOGGER.info("Scheduling " + project.getFullDisplayName() + " to build commit " + sha1);
                                     scmTriggerItem.scheduleBuild2(scmTriggerItem.getQuietPeriod(),
                                             new CauseAction(new CommitHookCause(sha1)),
-                                            new RevisionParameterAction(sha1));
+                                            new RevisionParameterAction(sha1), new ParametersAction(buildParameters));
                                     result.add(new ScheduledResponseContributor(project));
-                                } else if (trigger != null) {
+                                } else {
                                     LOGGER.info("Triggering the polling of " + project.getFullDisplayName());
                                     trigger.run();
                                     result.add(new PollingScheduledResponseContributor(project));

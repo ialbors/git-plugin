@@ -37,10 +37,10 @@ public class GitTagAction extends AbstractScmTagAction implements Describable<Gi
 
     private final String ws;
 
-    protected GitTagAction(Run build, FilePath workspace, BuildData buildData) {
+    protected GitTagAction(Run build, FilePath workspace, Revision revision) {
         super(build);
         this.ws = workspace.getRemote();
-        for (Branch b : buildData.lastBuild.revision.getBranches()) {
+        for (Branch b : revision.getBranches()) {
             tags.put(b.getName(), new ArrayList<String>());
         }
     }
@@ -193,7 +193,7 @@ public class GitTagAction extends AbstractScmTagAction implements Describable<Gi
                     workerThread = null;
                 }
                 catch (GitException ex) {
-                    ex.printStackTrace(listener.error("Error taggin repo '%s' : %s", b, ex.getMessage()));
+                    ex.printStackTrace(listener.error("Error tagging repo '%s' : %s", b, ex.getMessage()));
                     // Failed. Try the next one
                     listener.getLogger().println("Trying next branch");
                 }

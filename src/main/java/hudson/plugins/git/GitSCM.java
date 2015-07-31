@@ -510,11 +510,15 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
     @Override
     public boolean requiresWorkspaceForPolling() {
+        // TODO would need to use hudson.plugins.git.util.GitUtils.getPollEnvironment
+        return requiresWorkspaceForPolling(new EnvVars());
+    }
+
+    private boolean requiresWorkspaceForPolling(EnvVars environment) {
         for (GitSCMExtension ext : getExtensions()) {
             if (ext.requiresWorkspaceForPolling()) return true;
         }
-        // TODO would need to use hudson.plugins.git.util.GitUtils.getPollEnvironment
-        return getSingleBranch(new EnvVars()) == null;
+        return getSingleBranch(environment) == null;
     }
 
     @Override
@@ -541,6 +545,8 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         return j;
     }
 
+    public static final Pattern GIT_REF = Pattern.compile("(refs/[^/]+)/.*");
+
     private PollingResult compareRemoteRevisionWithImpl(Job<?, ?> project, Launcher launcher, FilePath workspace, final TaskListener listener) throws IOException, InterruptedException {
         // Poll for changes. Are there any unbuilt revisions that Hudson ought to build ?
 
@@ -558,9 +564,11 @@ public class GitSCM extends GitSCMBackwardCompatibility {
             listener.getLogger().println("[poll] Last Built Revision: " + buildData.lastBuild.revision);
         }
 
-        final String singleBranch = getSingleBranch(lastBuild.getEnvironment(listener));
+        final EnvVars pollEnv = project instanceof AbstractProject ? GitUtils.getPollEnvironment((AbstractProject) project, workspace, launcher, listener, false) : lastBuild.getEnvironment(listener);
 
-        if (!requiresWorkspaceForPolling()) {
+        final String singleBranch = getSingleBranch(pollEnv);
+
+        if (!requiresWorkspaceForPolling(pollEnv)) {
 
             final EnvVars environment = project instanceof AbstractProject ? GitUtils.getPollEnvironment((AbstractProject) project, workspace, launcher, listener, false) : new EnvVars();
 
@@ -568,6 +576,8 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
             for (RemoteConfig remoteConfig : getParamExpandedRepos(lastBuild, listener)) {
                 String remote = remoteConfig.getName();
+                List<RefSpec> refSpecs = getRefSpecs(remoteConfig, environment);
+
                 for (URIish urIish : remoteConfig.getURIs()) {
                     String gitRepo = urIish.toString();
                     Map<String, ObjectId> heads = git.getHeadRev(gitRepo);
@@ -576,25 +586,46 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                         return BUILD_NOW;
                     }
 
+                    listener.getLogger().println("Found "+ heads.size() +" remote heads on " + urIish);
+
+                    Iterator<Entry<String, ObjectId>> it = heads.entrySet().iterator();
+                    while (it.hasNext()) {
+                        String head = it.next().getKey();
+                        for (RefSpec spec : refSpecs) {
+                            if (!spec.matchSource(head)) {
+                                listener.getLogger().println("Ignoring " + head + " as it doesn't match configured refspecs");
+                                it.remove();
+                                break;
+                            }
+                        }
+                    }
+
+
                     for (BranchSpec branchSpec : getBranches()) {
                         for (Entry<String, ObjectId> entry : heads.entrySet()) {
                             final String head = entry.getKey();
-                            String name;
-                            // head is "refs/(heads|tags)/branchName
-                            if (head.startsWith("refs/heads/")) name = remote + "/" + head.substring(11);
-                            else if (head.startsWith("refs/tags/")) name = remote + "/" + head.substring(10);
-                            else name = remote + "/" + head;
+                            // head is "refs/(heads|tags|whatever)/branchName
 
-                            if (!branchSpec.matches(name, environment)) continue;
+                            // first, check the a canonical git reference is configured
+                            if (!branchSpec.matches(head, environment)) {
+
+                                // convert head `refs/(heads|tags|whatever)/branch` into shortcut notation `remote/branch`
+                                String name = head;
+                                Matcher matcher = GIT_REF.matcher(head);
+                                if (matcher.matches()) name = remote + head.substring(matcher.group(1).length());
+                                else name = remote + "/" + head;
+
+                                if (!branchSpec.matches(name, environment)) continue;
+                            }
 
                             final ObjectId sha1 = entry.getValue();
                             Build built = buildData.getLastBuild(sha1);
                             if (built != null) {
-                                listener.getLogger().println("[poll] Latest remote head revision on " + name + " is: " + sha1.getName() + " - already built by " + built.getBuildNumber());
+                                listener.getLogger().println("[poll] Latest remote head revision on " + head + " is: " + sha1.getName() + " - already built by " + built.getBuildNumber());
                                 continue;
                             }
 
-                            listener.getLogger().println("[poll] Latest remote head revision on " + name + " is: " + sha1.getName());
+                            listener.getLogger().println("[poll] Latest remote head revision on " + head + " is: " + sha1.getName());
                             return BUILD_NOW;
                         }
                     }
@@ -879,6 +910,9 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                                               final TaskListener listener) throws IOException, InterruptedException {
         PrintStream log = listener.getLogger();
         Collection<Revision> candidates = Collections.EMPTY_LIST;
+        final BuildChooserContext context = new BuildChooserContextImpl(build.getParent(), build, environment);
+        getBuildChooser().prepareWorkingTree(git, listener, context);
+
 
         // every MatrixRun should build the same marked commit ID
         if (build instanceof MatrixRun) {
@@ -904,7 +938,6 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         if (candidates.isEmpty() ) {
             final String singleBranch = environment.expand( getSingleBranch(environment) );
 
-            final BuildChooserContext context = new BuildChooserContextImpl(build.getParent(), build, environment);
             candidates = getBuildChooser().getCandidateRevisions(
                     false, singleBranch, git, listener, buildData, context);
         }
@@ -969,9 +1002,8 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 }
                 cmd.execute();
             } catch (GitException ex) {
-                String message = "Error cloning remote repo '" + rc.getName() + "'";
-                listener.error(message);
-                throw new AbortException(message);
+                ex.printStackTrace(listener.error("Error cloning remote repo '" + rc.getName() + "'"));
+                throw new AbortException();
             }
         }
 
@@ -981,10 +1013,8 @@ public class GitSCM extends GitSCMBackwardCompatibility {
             } catch (GitException ex) {
                 /* Allow retry by throwing AbortException instead of
                  * GitException. See JENKINS-20531. */
-                String message = "Error fetching remote repo '" + remoteRepository.getName() + "'";
-                listener.error(message);
-                ex.printStackTrace(listener.getLogger());
-                throw new AbortException(message);
+                ex.printStackTrace(listener.error("Error fetching remote repo '" + remoteRepository.getName() + "'"));
+                throw new AbortException();
             }
         }
     }
@@ -1015,7 +1045,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
         environment.put(GIT_COMMIT, revToBuild.revision.getSha1String());
         Branch branch = Iterables.getFirst(revToBuild.revision.getBranches(),null);
-        if (branch!=null) { // null for a detached HEAD
+        if (branch != null && branch.getName() != null) { // null for a detached HEAD
             environment.put(GIT_BRANCH, getBranchName(branch));
         }
 
@@ -1033,7 +1063,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
             throw new IOException("Could not checkout " + revToBuild.revision.getSha1String(), e);
         }
 
-        build.addAction(new GitTagAction(build, workspace, buildData));
+        build.addAction(new GitTagAction(build, workspace, revToBuild.revision));
 
         if (changelogFile != null) {
             computeChangeLog(git, revToBuild.revision, listener, previousBuildData, new FilePath(changelogFile),
@@ -1131,7 +1161,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         Revision rev = fixNull(getBuildData(build)).getLastBuiltRevision();
         if (rev!=null) {
             Branch branch = Iterables.getFirst(rev.getBranches(), null);
-            if (branch!=null) {
+            if (branch!=null && branch.getName()!=null) {
                 env.put(GIT_BRANCH, getBranchName(branch));
 
                 String prevCommit = getLastBuiltCommitOfBranch(build, branch);
@@ -1145,7 +1175,10 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                 }
             }
 
-            env.put(GIT_COMMIT, fixEmpty(rev.getSha1String()));
+            String sha1 = fixEmpty(rev.getSha1String());
+            if (sha1 != null && !sha1.isEmpty()) {
+                env.put(GIT_COMMIT, sha1);
+            }
         }
 
        

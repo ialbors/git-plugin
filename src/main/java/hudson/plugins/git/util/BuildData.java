@@ -1,7 +1,6 @@
 package hudson.plugins.git.util;
 
 import edu.umd.cs.findbugs.annotations.CheckForNull;
-import hudson.Functions;
 import hudson.model.AbstractBuild;
 import hudson.model.Action;
 import hudson.model.Api;
@@ -83,7 +82,7 @@ public class BuildData implements Action, Serializable, Cloneable {
     }
 
     public String getIconFileName() {
-        return Functions.getResourcePath()+"/plugin/git/icons/git-32x32.png";
+        return jenkins.model.Jenkins.RESOURCE_PATH+"/plugin/git/icons/git-32x32.png";
     }
 
     public String getUrlName() {
@@ -118,8 +117,8 @@ public class BuildData implements Action, Serializable, Cloneable {
     }
 
     public Build getLastBuild(ObjectId sha1) {
-        // fast check
-        if (lastBuild != null && (lastBuild.revision.equals(sha1) || lastBuild.marked.equals(sha1))) return lastBuild;
+        // fast check by first checking most recent build
+        if (lastBuild != null && (lastBuild.revision.getSha1().equals(sha1) || lastBuild.marked.getSha1().equals(sha1))) return lastBuild;
         try {
             for(Build b : buildsByBranchName.values()) {
                 if(b.revision.getSha1().equals(sha1) || b.marked.getSha1().equals(sha1))
@@ -239,9 +238,30 @@ public class BuildData implements Action, Serializable, Cloneable {
 
     @Override
     public String toString() {
-        return super.toString()+"[scmName="+scmName==null?"<null>":scmName+
+        final String scmNameString = scmName == null ? "<null>" : scmName;
+        return super.toString()+"[scmName="+scmNameString+
                 ",remoteUrls="+remoteUrls+
                 ",buildsByBranchName="+buildsByBranchName+
                 ",lastBuild="+lastBuild+"]";
+    }
+
+    /**
+     * Remove branches from BuildData that have been seen in the past but do not exist anymore
+     * @param keepBranches all branches available in current repository state
+     */
+    public void purgeStaleBranches(Set<Branch> keepBranches) {
+        Set<String> names = new HashSet<String>(buildsByBranchName.keySet());
+        for (Branch branch : keepBranches) {
+            String name = branch.getName();
+            if (name.startsWith("refs/")) {
+                names.remove(name.substring(5));
+            }
+            if (name.startsWith("remotes/")) {
+                names.remove(name.substring(8));
+            }
+        }
+        for (String name : names) {
+            buildsByBranchName.remove(name);
+        }
     }
 }
