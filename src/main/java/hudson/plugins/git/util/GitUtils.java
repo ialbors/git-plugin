@@ -162,6 +162,10 @@ public class GitUtils implements Serializable {
                             walk.reset();
                             RevCommit head = walk.parseCommit(r.getSha1());
 
+                            if (visited.contains(head)) {
+                              continue;
+                            }
+
                             tipCandidates.put(head, r);
 
                             walk.markStart(head);

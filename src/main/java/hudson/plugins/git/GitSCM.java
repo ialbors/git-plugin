@@ -591,15 +591,18 @@ public class GitSCM extends GitSCMBackwardCompatibility {
                     Iterator<Entry<String, ObjectId>> it = heads.entrySet().iterator();
                     while (it.hasNext()) {
                         String head = it.next().getKey();
+                        boolean match = false;
                         for (RefSpec spec : refSpecs) {
-                            if (!spec.matchSource(head)) {
-                                listener.getLogger().println("Ignoring " + head + " as it doesn't match configured refspecs");
-                                it.remove();
+                            if (spec.matchSource(head)) {
+                                match = true;
                                 break;
                             }
                         }
+                        if (!match) {
+                            listener.getLogger().println("Ignoring " + head + " as it doesn't match any of the configured refspecs");
+                            it.remove();
+                        }
                     }
-
 
                     for (BranchSpec branchSpec : getBranches()) {
                         for (Entry<String, ObjectId> entry : heads.entrySet()) {
@@ -931,7 +934,14 @@ public class GitSCM extends GitSCMBackwardCompatibility {
         if (candidates.isEmpty() ) {
             final RevisionParameterAction rpa = build.getAction(RevisionParameterAction.class);
             if (rpa != null) {
-                candidates = Collections.singleton(rpa.toRevision(git));
+                // in case the checkout is due to a commit notification on a
+                // multiple scm configuration, it should be verified if the triggering repo remote
+                // matches current repo remote to avoid JENKINS-26587
+                if (rpa.canOriginateFrom(this.getRepositories())) {
+                    candidates = Collections.singleton(rpa.toRevision(git));
+                } else {
+                    log.println("skipping resolution of commit " + rpa.commit + ", since it originates from another repository");
+                }
             }
         }
 
@@ -1028,7 +1038,7 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
         BuildData previousBuildData = getBuildData(build.getPreviousBuild());   // read only
         BuildData buildData = copyBuildData(build.getPreviousBuild());
-        build.addAction(buildData);
+
         if (VERBOSE && buildData.lastBuild != null) {
             listener.getLogger().println("Last Built Revision: " + buildData.lastBuild.revision);
         }
@@ -1042,6 +1052,17 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
         retrieveChanges(build, git, listener);
         Build revToBuild = determineRevisionToBuild(build, buildData, environment, git, listener);
+
+        // Track whether we're trying to add a duplicate BuildData, now that it's been updated with
+        // revision info for this build etc. The default assumption is that it's a duplicate.
+        boolean buildDataAlreadyPresent = build.getActions(BuildData.class).contains(buildData);
+
+        // If the BuildData is not already attached to this build, add it to the build and mark that
+        // it wasn't already present, so that we add the GitTagAction and changelog after the checkout
+        // finishes.
+        if (!buildDataAlreadyPresent) {
+            build.addAction(buildData);
+        }
 
         environment.put(GIT_COMMIT, revToBuild.revision.getSha1String());
         Branch branch = Iterables.getFirst(revToBuild.revision.getBranches(),null);
@@ -1058,16 +1079,19 @@ public class GitSCM extends GitSCMBackwardCompatibility {
 
         try {
           checkoutCommand.execute();
-        } catch(GitLockFailedException e) {
+        } catch (GitLockFailedException e) {
             // Rethrow IOException so the retry will be able to catch it
             throw new IOException("Could not checkout " + revToBuild.revision.getSha1String(), e);
         }
 
-        build.addAction(new GitTagAction(build, workspace, revToBuild.revision));
+        // Don't add the tag and changelog if we've already processed this BuildData before.
+        if (!buildDataAlreadyPresent) {
+            build.addAction(new GitTagAction(build, workspace, revToBuild.revision));
 
-        if (changelogFile != null) {
-            computeChangeLog(git, revToBuild.revision, listener, previousBuildData, new FilePath(changelogFile),
-                    new BuildChooserContextImpl(build.getParent(), build, environment));
+            if (changelogFile != null) {
+                computeChangeLog(git, revToBuild.revision, listener, previousBuildData, new FilePath(changelogFile),
+                        new BuildChooserContextImpl(build.getParent(), build, environment));
+            }
         }
 
         for (GitSCMExtension ext : extensions) {
